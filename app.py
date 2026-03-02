@@ -16,8 +16,8 @@ import tsm_engine as eng
 # Конфигурация
 # ═══════════════════════════════════════════════════════════════════════
 
-# DEFAULT_METRICS_DIR = 'Seq2Seq/data-metrics-480'
-DEFAULT_METRICS_DIR = 'LLMs/data-metrics-480'
+DEFAULT_METRICS_DIR = 'Seq2Seq/data-metrics-480'
+# DEFAULT_METRICS_DIR = 'LLMs/data-metrics-480'
 DEFAULT_DB_PATH = 'data-tables/data-full+LLM.db'
 GRID_COLS = 3  # колонок в сетке 2D графиков
 
@@ -328,7 +328,7 @@ def update_2d_graphs(results_json, thresholds, selected_doc):
             id={'type': 'graph-2d', 'index': model},
             figure=fig,
             config={'displayModeBar': False},
-            style={'height': '350px'},
+            style={'height': '350px', 'border': '1px solid #ddd'},
         )
         graphs.append(graph)
 
@@ -622,7 +622,7 @@ def update_3d_graph(toggle_value, results_json, thresholds, selected_doc):
         legend=dict(font=dict(size=11)),
     )
 
-    return [dcc.Graph(figure=fig, style={'height': '550px'})], {'display': 'block', 'margin-bottom': '15px', 'border': '1px solid black'}
+    return [dcc.Graph(figure=fig, style={'height': '550px'})], {'display': 'block', 'margin-bottom': '15px', 'border': '1px solid #ddd'}
 
 
 # ═══════════════════════════════════════════════════════════════════════
