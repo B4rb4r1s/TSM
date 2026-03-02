@@ -16,8 +16,8 @@ import tsm_engine as eng
 # Конфигурация
 # ═══════════════════════════════════════════════════════════════════════
 
-DEFAULT_METRICS_DIR = 'Seq2Seq/data-metrics-480'
-# DEFAULT_METRICS_DIR = 'LLMs/data-metrics-480'
+# DEFAULT_METRICS_DIR = 'Seq2Seq/data-metrics-480'
+DEFAULT_METRICS_DIR = 'LLMs/data-metrics-480'
 DEFAULT_DB_PATH = 'data-tables/data-full+LLM.db'
 GRID_COLS = 3  # колонок в сетке 2D графиков
 
@@ -30,6 +30,20 @@ MODEL_SHORT = {
     'summary_rut5': 'ruT5',
     'summary_t5': 'T5',
     'summary_Summarunner': 'SummaRuNNer',
+    'summary_forzer_GigaChat3-10B-A1.8B_latest': 'GigaChat3',
+    'summary_qwen2.5_7b': 'Qwen 2.5',
+    'summary_qwen3_8b': 'Qwen 3',
+    'summary_yandex_YandexGPT-5-Lite-8B-instruct-GGUF_latest': 'YandexGPT-5',
+}
+
+ZONE_LABELS = {
+    'Хороший': 'Целевая зона',
+    'Копирование': '',
+    'Неполный': '',
+    'Недост. сжатие': '',
+    'Избыт. сжатие': '',
+    'Низк. лексика': '',
+    'Неоднозначный': '',
 }
 
 # ═══════════════════════════════════════════════════════════════════════
