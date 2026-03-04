@@ -534,6 +534,120 @@ def compute_quality(df_diagnosed: pd.DataFrame, df_raw: pd.DataFrame,
 # Полный пайплайн
 # ═══════════════════════════════════════════════════════════════════════
 
+# ═══════════════════════════════════════════════════════════════════════
+# Оценка ручного ввода
+# ═══════════════════════════════════════════════════════════════════════
+
+def _extract_metric_value(metrics_block: Dict, lex_mode: str, sem_mode: str,
+                          rouge_measure: str, which: str = 'lex') -> Optional[float]:
+    """Извлечь значение метрики из блока ot_sr или ar_sr."""
+    if which == 'lex':
+        if lex_mode in ('rouge1', 'rouge2', 'rougeL'):
+            rouge_data = metrics_block.get('rouge', {})
+            return rouge_data.get(lex_mode, {}).get(rouge_measure)
+        else:
+            return metrics_block.get(lex_mode)
+    else:  # sem
+        if sem_mode == 'bertscore':
+            bs = metrics_block.get('bertscore')
+            return bs.get('f1') if isinstance(bs, dict) else None
+        elif sem_mode == 'bleurt':
+            return metrics_block.get('bleurt')
+    return None
+
+
+def evaluate_manual_input(
+    metrics_dict: Dict,
+    calibration: Dict,
+    thresholds: Dict,
+    lex_mode: str,
+    sem_mode: str,
+    rouge_measure: str,
+    alpha: float = 0.45,
+    beta: float = 0.25,
+    gamma: float = 0.15,
+    delta: float = 0.15,
+) -> Dict:
+    """
+    Оценить реферат по ручному вводу, используя существующую калибровку.
+
+    Args:
+        metrics_dict: результат metrics_compute.compute_all_metrics()
+        calibration: результат calibrate() из основного пайплайна
+        thresholds: результат compute_thresholds()
+        lex_mode: режим лексической метрики ('rouge1', 'bleu', 'chrf', 'meteor')
+        sem_mode: режим семантической метрики ('bleurt', 'bertscore')
+        rouge_measure: мера ROUGE ('p', 'r', 'f')
+        alpha, beta, gamma, delta: коэффициенты Q
+
+    Returns:
+        dict с z-scores, диагнозом, Q-score и всеми метриками
+    """
+    ot_sr = metrics_dict.get('ot_sr', {})
+
+    # 1. Извлечь raw значения метрик
+    raw_lex = _extract_metric_value(ot_sr, lex_mode, sem_mode, rouge_measure, 'lex')
+    raw_sem = _extract_metric_value(ot_sr, lex_mode, sem_mode, rouge_measure, 'sem')
+    raw_comp = metrics_dict.get('compression_ratio', 0.0)
+
+    # Проверка доступности метрик
+    if raw_lex is None:
+        return {'error': f'Лексическая метрика {lex_mode} не вычислена'}
+    if raw_sem is None:
+        return {'error': f'Семантическая метрика {sem_mode} не вычислена'}
+
+    # 2. Z-scores
+    z_lex = (raw_lex - calibration['mu_lex']) / calibration['sigma_lex']
+    z_sem = (raw_sem - calibration['mu_sem']) / calibration['sigma_sem']
+
+    if 'mu_comp' in calibration and calibration['sigma_comp'] > 0:
+        z_comp = (raw_comp - calibration['mu_comp']) / calibration['sigma_comp']
+    else:
+        z_comp = 0.0
+
+    # 3. Диагноз
+    diagnosis_type, diagnosis_confidence = _classify_one(z_lex, z_sem, z_comp, thresholds)
+
+    # 4. Q-score
+    has_reference = metrics_dict.get('ar_sr') is not None
+    if has_reference:
+        ar_sr = metrics_dict['ar_sr']
+        lex_as = _extract_metric_value(ar_sr, lex_mode, sem_mode, rouge_measure, 'lex') or 0.0
+        sem_as = _extract_metric_value(ar_sr, lex_mode, sem_mode, rouge_measure, 'sem') or 0.0
+    else:
+        # Без авторского реферата — упрощённая формула (множители = 1.0)
+        lex_as = 1.0
+        sem_as = 1.0
+
+    q_sem = sem_as * np.exp(-z_sem ** 2 / 2)
+    q_lex = lex_as * np.exp(-z_lex ** 2 / 2)
+    q_align = np.exp(-(z_lex - z_sem) ** 2 / 2)
+    q_comp = np.exp(-z_comp ** 2 / 2)
+    Q = alpha * q_sem + beta * q_lex + gamma * q_align + delta * q_comp
+
+    return {
+        'z_lex': float(z_lex),
+        'z_sem': float(z_sem),
+        'z_comp': float(z_comp),
+        'diagnosis_type': diagnosis_type,
+        'diagnosis_confidence': float(diagnosis_confidence),
+        'Q': float(Q),
+        'q_sem': float(q_sem),
+        'q_lex': float(q_lex),
+        'q_align': float(q_align),
+        'q_comp': float(q_comp),
+        'raw_lex': float(raw_lex),
+        'raw_sem': float(raw_sem),
+        'raw_comp': float(raw_comp),
+        'has_reference': has_reference,
+        'all_metrics': metrics_dict,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Полный пайплайн
+# ═══════════════════════════════════════════════════════════════════════
+
 def run_pipeline(data: Dict, lex_mode: str = 'rouge1', sem_mode: str = 'bleurt',
                  rouge_measure: str = 'p', selected_models: Optional[List[str]] = None,
                  threshold_mode: str = 'reference',

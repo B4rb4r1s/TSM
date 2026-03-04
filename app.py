@@ -1,5 +1,9 @@
 """
 app.py — Dash-приложение для интерактивной трёхфакторной оценки рефератов.
+
+Две вкладки:
+1. Анализ моделей — визуализация предвычисленных метрик из JSON
+2. Ручной анализ — ввод текста + реферата, вычисление метрик в реальном времени
 """
 
 import json
@@ -11,6 +15,7 @@ import plotly.graph_objects as go
 import pandas as pd
 
 import tsm_engine as eng
+import metrics_compute as mc
 
 # ═══════════════════════════════════════════════════════════════════════
 # Конфигурация
@@ -19,7 +24,7 @@ import tsm_engine as eng
 DEFAULT_METRICS_DIR = 'Seq2Seq/data-metrics-480'
 # DEFAULT_METRICS_DIR = 'LLMs/data-metrics-480'
 DEFAULT_DB_PATH = 'data-tables/data-full+LLM.db'
-GRID_COLS = 3  # колонок в сетке 2D графиков
+GRID_COLS = 4  # колонок в сетке 2D графиков
 
 MODEL_SHORT = {
     'summary_lingvo': 'Лингво',
@@ -30,20 +35,6 @@ MODEL_SHORT = {
     'summary_rut5': 'ruT5',
     'summary_t5': 'T5',
     'summary_Summarunner': 'SummaRuNNer',
-    'summary_forzer_GigaChat3-10B-A1.8B_latest': 'GigaChat3',
-    'summary_qwen2.5_7b': 'Qwen 2.5',
-    'summary_qwen3_8b': 'Qwen 3',
-    'summary_yandex_YandexGPT-5-Lite-8B-instruct-GGUF_latest': 'YandexGPT-5',
-}
-
-ZONE_LABELS = {
-    'Хороший': 'Целевая зона',
-    'Копирование': '',
-    'Неполный': '',
-    'Недост. сжатие': '',
-    'Избыт. сжатие': '',
-    'Низк. лексика': '',
-    'Неоднозначный': '',
 }
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -64,25 +55,10 @@ app = dash.Dash(__name__)
 app.title = 'TSM — Трёхфакторная оценка рефератов'
 
 # ═══════════════════════════════════════════════════════════════════════
-# Layout
+# Layout — Вкладка 1: Анализ моделей
 # ═══════════════════════════════════════════════════════════════════════
 
-app.layout = html.Div([
-    # Хранилища данных
-    dcc.Store(id='store-results', data=None),
-    dcc.Store(id='store-calibration', data=None),
-    dcc.Store(id='store-thresholds', data=None),
-    dcc.Store(id='store-selected-doc', data=None),
-
-    # ── Заголовок ──
-    html.Div([
-        html.H2('Трёхфакторная оценка качества машинных рефератов',
-                style={'margin': 0, 'color': '#2c3e50'}),
-        html.P('Интерактивный анализ: лексика × семантика × сжатие',
-               style={'margin': 0, 'color': '#7f8c8d', 'fontSize': '14px'}),
-    ], style={'padding': '15px 20px', 'borderBottom': '2px solid #3498db',
-              'background': '#ecf0f1'}),
-
+tab_models = dcc.Tab(label='Анализ моделей', value='tab-models', children=[
     # ── Панель настроек ──
     html.Details([
         html.Summary('Настройки', style={'cursor': 'pointer', 'fontWeight': 'bold',
@@ -239,12 +215,115 @@ app.layout = html.Div([
                   'borderLeft': '2px solid #ddd', 'overflowY': 'auto',
                   'maxHeight': '80vh', 'fontSize': '13px'}),
     ], style={'display': 'flex', 'padding': '10px 20px', 'gap': '10px'}),
-
-], style={'fontFamily': 'Arial, sans-serif', 'maxWidth': '1600px', 'margin': '0 auto'})
+])
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# Callback 1: Пересчёт пайплайна
+# Layout — Вкладка 2: Ручной анализ
+# ═══════════════════════════════════════════════════════════════════════
+
+_textarea_style = {
+    'width': '100%', 'minHeight': '120px', 'fontSize': '13px',
+    'padding': '8px', 'borderRadius': '4px', 'border': '1px solid #ccc',
+    'fontFamily': 'Arial, sans-serif', 'resize': 'vertical',
+}
+
+tab_manual = dcc.Tab(label='Ручной анализ', value='tab-manual', children=[
+    html.Div([
+        # ── Ввод текстов ──
+        html.Div([
+            html.H4('Ввод текстов', style={'margin': '0 0 10px 0', 'color': '#2c3e50'}),
+            html.P('Параметры метрик и калибровка берутся из вкладки «Анализ моделей».',
+                   style={'fontSize': '12px', 'color': '#7f8c8d', 'margin': '0 0 12px 0'}),
+
+            # Исходный текст
+            html.Div([
+                html.Label('Исходный текст (ОТ) *',
+                           style={'fontWeight': 'bold', 'fontSize': '13px', 'marginBottom': '4px'}),
+                dcc.Textarea(
+                    id='textarea-source',
+                    placeholder='Вставьте исходный текст статьи...',
+                    style={**_textarea_style, 'minHeight': '150px'},
+                ),
+            ], style={'marginBottom': '12px'}),
+
+            # Реферат
+            html.Div([
+                html.Label('Реферат (СР) *',
+                           style={'fontWeight': 'bold', 'fontSize': '13px', 'marginBottom': '4px'}),
+                dcc.Textarea(
+                    id='textarea-summary',
+                    placeholder='Вставьте реферат для оценки...',
+                    style=_textarea_style,
+                ),
+            ], style={'marginBottom': '12px'}),
+
+            # Авторский реферат (опционально)
+            html.Div([
+                html.Label('Авторский реферат (АР) — опционально',
+                           style={'fontWeight': 'bold', 'fontSize': '13px', 'marginBottom': '4px'}),
+                html.Span(' (для полного Q-score)',
+                          style={'fontSize': '11px', 'color': '#999'}),
+                dcc.Textarea(
+                    id='textarea-reference',
+                    placeholder='Вставьте авторский реферат (если есть)...',
+                    style=_textarea_style,
+                ),
+            ], style={'marginBottom': '16px'}),
+
+            # Кнопка
+            html.Button('Вычислить метрики', id='btn-compute-manual', n_clicks=0,
+                        style={'backgroundColor': '#27ae60', 'color': 'white', 'border': 'none',
+                               'padding': '10px 30px', 'fontSize': '15px', 'cursor': 'pointer',
+                               'borderRadius': '4px', 'fontWeight': 'bold'}),
+        ], style={'maxWidth': '900px'}),
+
+        # ── Результаты (внутри Loading) ──
+        dcc.Loading(
+            id='loading-manual',
+            type='default',
+            color='#27ae60',
+            children=[
+                html.Div(id='div-manual-results', style={'marginTop': '20px'}),
+            ],
+        ),
+
+    ], style={'padding': '15px 20px'}),
+])
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Общий Layout
+# ═══════════════════════════════════════════════════════════════════════
+
+app.layout = html.Div([
+    # Хранилища данных (общие для обеих вкладок)
+    dcc.Store(id='store-results', data=None),
+    dcc.Store(id='store-calibration', data=None),
+    dcc.Store(id='store-thresholds', data=None),
+    dcc.Store(id='store-selected-doc', data=None),
+    dcc.Store(id='store-manual-metrics', data=None),
+
+    # ── Заголовок ──
+    html.Div([
+        html.H2('Трёхфакторная оценка качества машинных рефератов',
+                style={'margin': 0, 'color': '#2c3e50'}),
+        html.P('Интерактивный анализ: лексика × семантика × сжатие',
+               style={'margin': 0, 'color': '#7f8c8d', 'fontSize': '14px'}),
+    ], style={'padding': '15px 20px', 'borderBottom': '2px solid #3498db',
+              'background': '#ecf0f1'}),
+
+    # ── Вкладки ──
+    dcc.Tabs(id='main-tabs', value='tab-models', children=[
+        tab_models,
+        tab_manual,
+    ], style={'fontSize': '14px'}),
+
+], style={'fontFamily': 'Arial, sans-serif', 'maxWidth': '95%', 'margin': '0 auto'})
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Callback 1: Пересчёт пайплайна (Вкладка 1)
 # ═══════════════════════════════════════════════════════════════════════
 
 @callback(
@@ -303,7 +382,7 @@ def update_pipeline(n_clicks, lex_mode, sem_mode, rouge_measure,
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# Callback 2: Отрисовка 2D графиков
+# Callback 2: Отрисовка 2D графиков (Вкладка 1)
 # ═══════════════════════════════════════════════════════════════════════
 
 @callback(
@@ -404,7 +483,7 @@ def _make_2d_scatter(df, model, thresholds, selected_doc):
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# Callback 3: Клик по точке → выбор документа
+# Callback 3: Клик по точке → выбор документа (Вкладка 1)
 # ═══════════════════════════════════════════════════════════════════════
 
 @callback(
@@ -413,7 +492,6 @@ def _make_2d_scatter(df, model, thresholds, selected_doc):
     prevent_initial_call=True,
 )
 def on_click(click_data_list):
-    # Найти какой график был кликнут
     for cd in click_data_list:
         if cd is not None:
             point = cd['points'][0]
@@ -423,7 +501,7 @@ def on_click(click_data_list):
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# Callback 4: Инфо-панель
+# Callback 4: Инфо-панель (Вкладка 1)
 # ═══════════════════════════════════════════════════════════════════════
 
 @callback(
@@ -516,7 +594,7 @@ def update_info_panel(selected_doc, results_json):
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# Callback 5: 3D график
+# Callback 5: 3D график (Вкладка 1)
 # ═══════════════════════════════════════════════════════════════════════
 
 @callback(
@@ -535,8 +613,7 @@ def update_3d_graph(toggle_value, results_json, thresholds, selected_doc):
 
     fig = go.Figure()
 
-    # Модели — разные маркеры
-    # Scatter3d поддерживает только: circle, circle-open, cross, diamond, diamond-open, square, square-open, x
+    # Scatter3d поддерживает: circle, circle-open, cross, diamond, diamond-open, square, square-open, x
     symbols = ['circle', 'square', 'diamond', 'cross', 'x', 'circle-open', 'square-open',
                'diamond-open']
     models = sorted(df['model'].unique())
@@ -564,7 +641,7 @@ def update_3d_graph(toggle_value, results_json, thresholds, selected_doc):
             ),
         ))
 
-    # Пороговый параллелепипед (wireframe)
+    # Пороговый параллелепипед
     if thresholds:
         tll = thresholds.get('tau_lex_lower', -2)
         tlu = thresholds.get('tau_lex_upper', 2)
@@ -573,7 +650,6 @@ def update_3d_graph(toggle_value, results_json, thresholds, selected_doc):
         tcl = thresholds.get('tau_comp_lower', -2)
         tcu = thresholds.get('tau_comp_upper', 2)
 
-        # 12 рёбер параллелепипеда
         edges_x, edges_y, edges_z = [], [], []
         for x0, x1 in [(tll, tlu)]:
             for y in [tsl, tsu]:
@@ -626,10 +702,367 @@ def update_3d_graph(toggle_value, results_json, thresholds, selected_doc):
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# Callback 6: Вычисление метрик ручного ввода (Вкладка 2)
+# ═══════════════════════════════════════════════════════════════════════
+
+@callback(
+    Output('div-manual-results', 'children'),
+    Input('btn-compute-manual', 'n_clicks'),
+    State('textarea-source', 'value'),
+    State('textarea-summary', 'value'),
+    State('textarea-reference', 'value'),
+    State('store-calibration', 'data'),
+    State('store-thresholds', 'data'),
+    State('store-results', 'data'),
+    State('dd-lex-metric', 'value'),
+    State('dd-sem-metric', 'value'),
+    State('radio-rouge-measure', 'value'),
+    State('input-alpha', 'value'),
+    State('input-beta', 'value'),
+    State('input-gamma', 'value'),
+    State('input-delta', 'value'),
+    prevent_initial_call=True,
+)
+def compute_manual_metrics(n_clicks, source_text, summary_text, reference_text,
+                           calibration, thresholds, results_json,
+                           lex_mode, sem_mode, rouge_measure,
+                           alpha, beta, gamma, delta):
+    if not source_text or not source_text.strip():
+        return html.Div('Введите исходный текст.', style={'color': '#e74c3c', 'fontWeight': 'bold'})
+    if not summary_text or not summary_text.strip():
+        return html.Div('Введите реферат.', style={'color': '#e74c3c', 'fontWeight': 'bold'})
+    if calibration is None or thresholds is None:
+        return html.Div(
+            'Сначала запустите анализ на вкладке «Анализ моделей» (нажмите «Применить»).',
+            style={'color': '#e74c3c', 'fontWeight': 'bold'},
+        )
+
+    # Embedding-метрики не поддерживаются для ручного ввода
+    if sem_mode and sem_mode.startswith('emb:'):
+        return html.Div(
+            'Embedding-метрики не поддерживаются для ручного ввода. '
+            'Выберите BERTScore или BLEURT на вкладке «Анализ моделей».',
+            style={'color': '#e74c3c'},
+        )
+
+    source_text = source_text.strip()
+    summary_text = summary_text.strip()
+    reference_text = reference_text.strip() if reference_text else None
+
+    # 1. Вычислить метрики
+    try:
+        all_metrics = mc.compute_all_metrics(
+            source=source_text,
+            summary=summary_text,
+            reference=reference_text,
+            device='cuda',
+        )
+    except Exception as e:
+        return html.Div(f'Ошибка вычисления метрик: {e}', style={'color': '#e74c3c'})
+
+    # 2. Оценить через TSM
+    try:
+        result = eng.evaluate_manual_input(
+            metrics_dict=all_metrics,
+            calibration=calibration,
+            thresholds=thresholds,
+            lex_mode=lex_mode or 'rouge1',
+            sem_mode=sem_mode or 'bleurt',
+            rouge_measure=rouge_measure or 'p',
+            alpha=alpha or 0.45,
+            beta=beta or 0.25,
+            gamma=gamma or 0.15,
+            delta=delta or 0.15,
+        )
+    except Exception as e:
+        return html.Div(f'Ошибка оценки: {e}', style={'color': '#e74c3c'})
+
+    if 'error' in result:
+        return html.Div(f'Ошибка: {result["error"]}', style={'color': '#e74c3c'})
+
+    # 3. Собрать UI результатов
+    return _build_manual_results_ui(result, all_metrics, thresholds, results_json,
+                                    lex_mode, sem_mode, rouge_measure)
+
+
+def _build_manual_results_ui(result, all_metrics, thresholds, results_json,
+                              lex_mode, sem_mode, rouge_measure):
+    """Собрать HTML-контент с результатами ручного анализа."""
+    diag = result['diagnosis_type']
+    diag_color = eng.DIAGNOSIS_COLORS.get(diag, '#ccc')
+    diag_label = eng.DIAGNOSIS_LABELS_RU.get(diag, diag)
+    has_ref = result['has_reference']
+    lengths = all_metrics.get('lengths', {})
+
+    children = []
+
+    # Строка длин текстов
+    length_items = [
+        html.Span(f'ОТ: {lengths.get("source", 0)} симв.', style={'fontSize': '12px'}),
+        html.Span(' | '),
+        html.Span(f'СР: {lengths.get("summary", 0)} симв.', style={'fontSize': '12px'}),
+        html.Span(' | '),
+        html.Span(f'Сжатие: {all_metrics.get("compression_ratio", 0):.3f}',
+                  style={'fontSize': '12px'}),
+    ]
+    if lengths.get('reference'):
+        length_items += [
+            html.Span(' | '),
+            html.Span(f'АР: {lengths["reference"]} симв.', style={'fontSize': '12px'}),
+        ]
+
+    # ── Верхняя часть: карточка + график ──
+    children.append(html.Div([
+        # ЛЕВАЯ КОЛОНКА: Карточка диагноза + таблица метрик
+        html.Div([
+            # Диагноз
+            html.Div([
+                html.Div([
+                    html.Span('Диагноз: ', style={'fontSize': '16px', 'fontWeight': 'bold'}),
+                    html.Span(diag_label, style={
+                        'fontSize': '18px', 'fontWeight': 'bold', 'color': 'white',
+                        'backgroundColor': diag_color, 'padding': '4px 12px',
+                        'borderRadius': '4px',
+                    }),
+                ], style={'marginBottom': '10px'}),
+
+                html.Div([
+                    html.Span(f'Уверенность: {result["diagnosis_confidence"]:.2f}',
+                              style={'fontSize': '13px', 'color': '#666'}),
+                ], style={'marginBottom': '8px'}),
+
+                # Q-score
+                html.Div([
+                    html.Span('Q-score: ', style={'fontSize': '15px', 'fontWeight': 'bold'}),
+                    html.Span(f'{result["Q"]:.4f}', style={
+                        'fontSize': '20px', 'fontWeight': 'bold', 'color': '#2c3e50',
+                    }),
+                    html.Span(' (упрощ.)' if not has_ref else '',
+                              style={'fontSize': '11px', 'color': '#999', 'marginLeft': '4px'}),
+                ], style={'marginBottom': '12px'}),
+
+                # Z-scores
+                html.Div([
+                    _z_badge('z_lex', result['z_lex']),
+                    _z_badge('z_sem', result['z_sem']),
+                    _z_badge('z_comp', result['z_comp']),
+                ], style={'display': 'flex', 'gap': '8px', 'marginBottom': '12px'}),
+
+                # Компоненты Q
+                html.Div([
+                    html.Strong('Компоненты Q:', style={'fontSize': '12px'}),
+                    html.Div([
+                        html.Span(f'q_sem={result["q_sem"]:.3f} (×α)', style={'fontSize': '12px'}),
+                        html.Span(' | ', style={'color': '#ddd'}),
+                        html.Span(f'q_lex={result["q_lex"]:.3f} (×β)', style={'fontSize': '12px'}),
+                        html.Span(' | ', style={'color': '#ddd'}),
+                        html.Span(f'q_align={result["q_align"]:.3f} (×γ)', style={'fontSize': '12px'}),
+                        html.Span(' | ', style={'color': '#ddd'}),
+                        html.Span(f'q_comp={result["q_comp"]:.3f} (×δ)', style={'fontSize': '12px'}),
+                    ]),
+                ], style={'padding': '6px', 'background': '#f8f9fa', 'borderRadius': '4px',
+                          'marginBottom': '12px'}),
+
+                # Длины текстов
+                html.Div(length_items, style={'marginBottom': '12px', 'color': '#666'}),
+
+            ], style={'padding': '12px', 'border': f'2px solid {diag_color}',
+                      'borderRadius': '8px', 'marginBottom': '12px'}),
+
+            # Таблица всех метрик
+            _build_metrics_table(all_metrics),
+
+        ], style={'width': '380px', 'minWidth': '340px'}),
+
+        # ПРАВАЯ КОЛОНКА: Scatter plot
+        html.Div([
+            dcc.Graph(
+                id='graph-manual-scatter',
+                figure=_make_manual_scatter(result, thresholds, results_json),
+                config={'displayModeBar': True, 'displaylogo': False},
+                style={'height': '500px'},
+            ),
+        ], style={'flex': '1', 'minWidth': '400px'}),
+
+    ], style={'display': 'flex', 'gap': '20px', 'flexWrap': 'wrap'}))
+
+    return children
+
+
+def _z_badge(label, value):
+    """Плашка со z-score."""
+    color = '#2ecc71' if abs(value) < 1 else '#f39c12' if abs(value) < 2 else '#e74c3c'
+    return html.Span(
+        f'{label} = {value:+.3f}',
+        style={
+            'fontSize': '13px', 'fontWeight': 'bold', 'padding': '3px 8px',
+            'borderRadius': '4px', 'border': f'1px solid {color}', 'color': color,
+        },
+    )
+
+
+def _build_metrics_table(all_metrics):
+    """Таблица всех вычисленных метрик."""
+    ot_sr = all_metrics.get('ot_sr', {})
+    ar_sr = all_metrics.get('ar_sr')
+
+    rows = [html.Tr([
+        html.Th('Метрика', style={'padding': '4px 8px', 'textAlign': 'left'}),
+        html.Th('ОТ-СР', style={'padding': '4px 8px', 'textAlign': 'center'}),
+        *([html.Th('АР-СР', style={'padding': '4px 8px', 'textAlign': 'center'})] if ar_sr else []),
+    ], style={'background': '#2c3e50', 'color': 'white', 'fontSize': '11px'})]
+
+    def _fmt(val):
+        if val is None:
+            return 'н/д'
+        return f'{val:.4f}'
+
+    # ROUGE
+    rouge = ot_sr.get('rouge', {})
+    rouge_ar = (ar_sr or {}).get('rouge', {})
+    for rtype in ('rouge1', 'rouge2', 'rougeL'):
+        for measure, mlabel in [('p', 'P'), ('r', 'R'), ('f', 'F')]:
+            val = rouge.get(rtype, {}).get(measure)
+            val_ar = rouge_ar.get(rtype, {}).get(measure) if ar_sr else None
+            rows.append(html.Tr([
+                html.Td(f'{rtype.upper()} {mlabel}', style={'padding': '2px 8px', 'fontSize': '12px'}),
+                html.Td(_fmt(val), style={'padding': '2px 8px', 'textAlign': 'center', 'fontSize': '12px'}),
+                *([html.Td(_fmt(val_ar), style={'padding': '2px 8px', 'textAlign': 'center', 'fontSize': '12px'})] if ar_sr else []),
+            ], style={'borderBottom': '1px solid #eee'}))
+
+    # BLEU, chrF, METEOR
+    for metric_key, metric_label in [('bleu', 'BLEU'), ('chrf', 'chrF++'), ('meteor', 'METEOR')]:
+        val = ot_sr.get(metric_key)
+        val_ar = (ar_sr or {}).get(metric_key) if ar_sr else None
+        rows.append(html.Tr([
+            html.Td(metric_label, style={'padding': '2px 8px', 'fontSize': '12px', 'fontWeight': 'bold'}),
+            html.Td(_fmt(val), style={'padding': '2px 8px', 'textAlign': 'center', 'fontSize': '12px'}),
+            *([html.Td(_fmt(val_ar), style={'padding': '2px 8px', 'textAlign': 'center', 'fontSize': '12px'})] if ar_sr else []),
+        ], style={'borderBottom': '1px solid #ddd', 'background': '#f8f9fa'}))
+
+    # BERTScore
+    bs = ot_sr.get('bertscore')
+    bs_ar = (ar_sr or {}).get('bertscore') if ar_sr else None
+    if bs is not None:
+        for key, label in [('precision', 'P'), ('recall', 'R'), ('f1', 'F1')]:
+            val = bs.get(key) if isinstance(bs, dict) else None
+            val_ar = bs_ar.get(key) if isinstance(bs_ar, dict) else None
+            rows.append(html.Tr([
+                html.Td(f'BERTScore {label}', style={'padding': '2px 8px', 'fontSize': '12px'}),
+                html.Td(_fmt(val), style={'padding': '2px 8px', 'textAlign': 'center', 'fontSize': '12px'}),
+                *([html.Td(_fmt(val_ar), style={'padding': '2px 8px', 'textAlign': 'center', 'fontSize': '12px'})] if ar_sr else []),
+            ], style={'borderBottom': '1px solid #eee'}))
+    else:
+        rows.append(html.Tr([
+            html.Td('BERTScore', style={'padding': '2px 8px', 'fontSize': '12px'}),
+            html.Td('н/д', style={'padding': '2px 8px', 'textAlign': 'center', 'fontSize': '12px', 'color': '#999'}),
+            *([html.Td('н/д', style={'padding': '2px 8px', 'textAlign': 'center', 'fontSize': '12px', 'color': '#999'})] if ar_sr else []),
+        ], style={'borderBottom': '1px solid #eee'}))
+
+    # BLEURT
+    bleurt_val = ot_sr.get('bleurt')
+    bleurt_ar = (ar_sr or {}).get('bleurt') if ar_sr else None
+    rows.append(html.Tr([
+        html.Td('BLEURT', style={'padding': '2px 8px', 'fontSize': '12px', 'fontWeight': 'bold'}),
+        html.Td(_fmt(bleurt_val), style={'padding': '2px 8px', 'textAlign': 'center', 'fontSize': '12px'}),
+        *([html.Td(_fmt(bleurt_ar), style={'padding': '2px 8px', 'textAlign': 'center', 'fontSize': '12px'})] if ar_sr else []),
+    ], style={'borderBottom': '1px solid #ddd', 'background': '#f8f9fa'}))
+
+    # Сжатие
+    comp = all_metrics.get('compression_ratio')
+    rows.append(html.Tr([
+        html.Td('Сжатие', style={'padding': '2px 8px', 'fontSize': '12px', 'fontWeight': 'bold'}),
+        html.Td(_fmt(comp), style={'padding': '2px 8px', 'textAlign': 'center', 'fontSize': '12px'}),
+        *([html.Td('—', style={'padding': '2px 8px', 'textAlign': 'center', 'fontSize': '12px'})] if ar_sr else []),
+    ], style={'background': '#f8f9fa'}))
+
+    return html.Div([
+        html.Strong('Все метрики', style={'fontSize': '13px', 'marginBottom': '6px', 'display': 'block'}),
+        html.Table(rows, style={
+            'borderCollapse': 'collapse', 'width': '100%', 'border': '1px solid #ddd',
+        }),
+    ])
+
+
+def _make_manual_scatter(result, thresholds, results_json):
+    """Scatter plot: фон моделей + точка ручного реферата."""
+    fig = go.Figure()
+
+    # Пороговая зона
+    if thresholds:
+        tll = thresholds.get('tau_lex_lower', -2)
+        tlu = thresholds.get('tau_lex_upper', 2)
+        tsl = thresholds.get('tau_sem_lower', -2)
+        tsu = thresholds.get('tau_sem_upper', 2)
+        fig.add_shape(type='rect', x0=tll, x1=tlu, y0=tsl, y1=tsu,
+                      fillcolor='rgba(46,204,113,0.12)', line=dict(color='#2ecc71', width=1.5, dash='dash'))
+
+    # Фоновые точки моделей
+    if results_json:
+        try:
+            df = pd.read_json(results_json, orient='records')
+            fig.add_trace(go.Scatter(
+                x=df['z_lex'], y=df['z_sem'],
+                mode='markers',
+                marker=dict(
+                    color=[eng.DIAGNOSIS_COLORS.get(d, '#ccc') for d in df['diagnosis_type']],
+                    size=4, opacity=0.15,
+                ),
+                name='Модели',
+                hoverinfo='skip',
+                showlegend=True,
+            ))
+        except Exception:
+            pass
+
+    # Точка ручного реферата
+    diag = result['diagnosis_type']
+    diag_color = eng.DIAGNOSIS_COLORS.get(diag, '#ccc')
+    diag_label = eng.DIAGNOSIS_LABELS_RU.get(diag, diag)
+
+    fig.add_trace(go.Scatter(
+        x=[result['z_lex']], y=[result['z_sem']],
+        mode='markers+text',
+        marker=dict(color=diag_color, size=18, symbol='star',
+                    line=dict(width=2, color='#2c3e50')),
+        text=[f'  {diag_label}'],
+        textposition='middle right',
+        textfont=dict(size=12, color=diag_color),
+        name='Ручной реферат',
+        hovertemplate=(
+            f'Ручной реферат<br>'
+            f'z_lex=%{{x:.3f}}<br>'
+            f'z_sem=%{{y:.3f}}<br>'
+            f'z_comp={result["z_comp"]:.3f}<br>'
+            f'Q={result["Q"]:.4f}<br>'
+            f'{diag_label}<extra></extra>'
+        ),
+        showlegend=True,
+    ))
+
+    fig.update_layout(
+        title=dict(text='Позиция реферата среди моделей', font=dict(size=14)),
+        xaxis=dict(title='z_lex (лексическое отклонение)', zeroline=True, zerolinewidth=0.5),
+        yaxis=dict(title='z_sem (семантическое отклонение)', zeroline=True, zerolinewidth=0.5),
+        margin=dict(l=50, r=20, t=40, b=40),
+        plot_bgcolor='white',
+        paper_bgcolor='white',
+        height=500,
+        legend=dict(
+            yanchor='top', y=0.99, xanchor='left', x=0.01,
+            bgcolor='rgba(255,255,255,0.8)', font=dict(size=11),
+        ),
+    )
+    fig.update_xaxes(gridcolor='#eee', gridwidth=0.5)
+    fig.update_yaxes(gridcolor='#eee', gridwidth=0.5)
+
+    return fig
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # Автозапуск при старте
 # ═══════════════════════════════════════════════════════════════════════
 
-# Выполнить пайплайн при первой загрузке
 app.clientside_callback(
     """
     function(n) {
