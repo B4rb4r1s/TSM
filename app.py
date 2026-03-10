@@ -21,8 +21,7 @@ import metrics_compute as mc
 # Конфигурация
 # ═══════════════════════════════════════════════════════════════════════
 
-DEFAULT_METRICS_DIR = 'Seq2Seq/data-metrics-480'
-# DEFAULT_METRICS_DIR = 'LLMs/data-metrics-480'
+DEFAULT_METRICS_DIR = 'FULL/data-metrics-480'
 DEFAULT_DB_PATH = 'data-tables/data-full+LLM.db'
 GRID_COLS = 4  # колонок в сетке 2D графиков
 
@@ -35,6 +34,10 @@ MODEL_SHORT = {
     'summary_rut5': 'ruT5',
     'summary_t5': 'T5',
     'summary_Summarunner': 'SummaRuNNer',
+    'summary_forzer_GigaChat3-10B-A1.8B_latest': 'GigaChat',
+    'summary_qwen2.5_7b': 'Qwen 2.5',
+    'summary_qwen3_8b': 'Qwen 3',
+    'summary_yandex_YandexGPT-5-Lite-8B-instruct-GGUF_latest': 'YandexGPT',
 }
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -199,7 +202,7 @@ tab_models = dcc.Tab(label='Анализ моделей', value='tab-models', ch
                 dcc.Checklist(
                     id='toggle-3d',
                     options=[{'label': ' Показать 3D график (z_lex × z_sem × z_comp)', 'value': 'show'}],
-                    value=[],
+                    value=['show'],
                     style={'fontSize': '13px', 'padding': '8px 0'},
                 ),
             ]),

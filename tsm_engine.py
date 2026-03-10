@@ -90,30 +90,19 @@ def load_metrics(metrics_dir: str) -> Dict[str, Any]:
 
 
 def get_available_models(data: Dict) -> List[str]:
-    """Получить список моделей, доступных во всех метриках."""
-    model_sets = []
-
-    # Из lengths (compression_ratio)
-    if 'lengths' in data and 'compression_ratio' in data['lengths']:
-        cr = data['lengths']['compression_ratio']
-        model_sets.append(set(k for k in cr.keys() if k != 'АР'))
-
-    # Из любой метрики с ОТ-СР
-    for key in ('rouge', 'bleu', 'chrf', 'meteor', 'bleurt', 'bertscore'):
-        if key in data and 'ОТ-СР' in data[key]:
-            sr = data[key]['ОТ-СР']
-            if isinstance(sr, dict):
-                model_sets.append(set(sr.keys()))
-
-    if not model_sets:
+    """Получить список моделей, доступных в базовых метриках (rouge + lengths)."""
+    # Базовый набор: модели из rouge (обязательная метрика)
+    if 'rouge' in data and 'ОТ-СР' in data['rouge']:
+        models = set(data['rouge']['ОТ-СР'].keys())
+    else:
         return []
 
-    # Пересечение — модели, доступные во всех метриках
-    common = model_sets[0]
-    for s in model_sets[1:]:
-        common = common & s
+    # Фильтр по lengths (compression_ratio) — тоже обязательно
+    if 'lengths' in data and 'compression_ratio' in data['lengths']:
+        cr = data['lengths']['compression_ratio']
+        models = models & set(k for k in cr.keys() if k != 'АР')
 
-    return sorted(common)
+    return sorted(models)
 
 
 def get_available_lexical_metrics(data: Dict) -> List[str]:
@@ -250,30 +239,43 @@ def prepare_dataframe(data: Dict, lex_mode: str, sem_mode: str,
 
     # Вспомогательные функции для embedding
     def get_lex(comparison, model, idx):
-        if model:
-            block = data[lex_source][comparison][model]
-        else:
-            block = data[lex_source][comparison]
+        try:
+            if model:
+                block = data[lex_source][comparison].get(model)
+                if block is None:
+                    return None
+            else:
+                block = data[lex_source][comparison]
 
-        if lex_key is None:
-            return block[idx] if isinstance(block, list) else block[idx]
-        if lex_source == 'rouge':
-            return block[lex_key][rouge_measure][idx]
-        return block[lex_key][idx]
+            if lex_key is None:
+                return block[idx] if isinstance(block, list) else block[idx]
+            if lex_source == 'rouge':
+                return block[lex_key][rouge_measure][idx]
+            return block[lex_key][idx]
+        except (KeyError, IndexError, TypeError):
+            return None
 
     def get_sem(comparison, model, idx):
-        if sem_source == 'embeddings':
+        try:
+            if sem_source == 'embeddings':
+                if model:
+                    block = data[sem_source][sem_key][comparison].get(model)
+                    if block is None:
+                        return None
+                    return block[idx]
+                else:
+                    return data[sem_source][sem_key][comparison][idx]
             if model:
-                return data[sem_source][sem_key][comparison][model][idx]
+                block = data[sem_source][comparison].get(model)
+                if block is None:
+                    return None
             else:
-                return data[sem_source][sem_key][comparison][idx]
-        if model:
-            block = data[sem_source][comparison][model]
-        else:
-            block = data[sem_source][comparison]
-        if sem_key is None:
-            return block[idx] if isinstance(block, list) else block[idx]
-        return block[sem_key][idx]
+                block = data[sem_source][comparison]
+            if sem_key is None:
+                return block[idx] if isinstance(block, list) else block[idx]
+            return block[sem_key][idx]
+        except (KeyError, IndexError, TypeError):
+            return None
 
     # 1. ОТ-АР
     for i in range(n_docs):
@@ -289,28 +291,38 @@ def prepare_dataframe(data: Dict, lex_mode: str, sem_mode: str,
 
     # 2. ОТ-СР и АР-СР для каждой модели
     for model_name in selected_models:
+        cr_list = data['lengths']['compression_ratio'].get(model_name) if has_compression else None
         for i in range(n_docs):
-            cr = data['lengths']['compression_ratio'][model_name][i] if has_compression else None
+            cr = cr_list[i] if cr_list and i < len(cr_list) else None
+
+            # Пропускаем документы с null-значениями (отсутствующие рефераты)
+            lex_val = get_lex('ОТ-СР', model_name, i)
+            sem_val = get_sem('ОТ-СР', model_name, i)
+            if lex_val is None or sem_val is None or cr is None:
+                continue
 
             # ОТ-СР
             rows.append({
                 'doc_id': i,
                 'model': model_name,
                 'comparison': 'OT-SR',
-                'lexical': get_lex('ОТ-СР', model_name, i),
-                'semantic': get_sem('ОТ-СР', model_name, i),
+                'lexical': lex_val,
+                'semantic': sem_val,
                 'compression_ratio': cr,
             })
 
             # АР-СР
-            rows.append({
-                'doc_id': i,
-                'model': model_name,
-                'comparison': 'AR-SR',
-                'lexical': get_lex('АР-СР', model_name, i),
-                'semantic': get_sem('АР-СР', model_name, i),
-                'compression_ratio': cr,
-            })
+            lex_ar = get_lex('АР-СР', model_name, i)
+            sem_ar = get_sem('АР-СР', model_name, i)
+            if lex_ar is not None and sem_ar is not None:
+                rows.append({
+                    'doc_id': i,
+                    'model': model_name,
+                    'comparison': 'AR-SR',
+                    'lexical': lex_ar,
+                    'semantic': sem_ar,
+                    'compression_ratio': cr,
+                })
 
     return pd.DataFrame(rows)
 
