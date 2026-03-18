@@ -33,11 +33,11 @@ MODEL_SHORT = {
     'summary_mbart': 'mBART',
     'summary_rut5': 'ruT5',
     'summary_t5': 'T5',
-    'summary_Summarunner': 'SummaRuNNer',
-    'summary_forzer_GigaChat3-10B-A1.8B_latest': 'GigaChat',
+    # 'summary_Summarunner': 'SummaRuNNer',
+    'summary_forzer_GigaChat3-10B-A1.8B_latest': 'GigaChat 3',
     'summary_qwen2.5_7b': 'Qwen 2.5',
     'summary_qwen3_8b': 'Qwen 3',
-    'summary_yandex_YandexGPT-5-Lite-8B-instruct-GGUF_latest': 'YandexGPT',
+    'summary_yandex_YandexGPT-5-Lite-8B-instruct-GGUF_latest': 'YandexGPT 5',
 }
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -216,7 +216,7 @@ tab_models = dcc.Tab(label='Анализ моделей', value='tab-models', ch
             html.Div('Кликните на точку на графике', style={'color': '#999', 'fontStyle': 'italic'}),
         ], style={'width': '400px', 'minWidth': '360px', 'padding': '10px',
                   'borderLeft': '2px solid #ddd', 'overflowY': 'auto',
-                  'maxHeight': '80vh', 'fontSize': '13px'}),
+                  'maxHeight': '180vh', 'fontSize': '13px'}),
     ], style={'display': 'flex', 'padding': '10px 20px', 'gap': '10px'}),
 ])
 
@@ -564,7 +564,7 @@ def update_info_panel(selected_doc, results_json):
         children.append(html.Div([
             html.Strong('Авторский реферат', style={'color': '#2c3e50'}),
             html.Span(f' ({len(target)} симв.)', style={'color': '#999', 'fontSize': '11px'}),
-            html.Div(target[:500] + ('...' if len(target) > 500 else ''),
+            html.Div(target[:1500] + ('...' if len(target) > 1500 else ''),
                      style={'padding': '6px', 'background': '#f0f0f0', 'borderRadius': '4px',
                             'fontSize': '12px', 'marginTop': '4px', 'whiteSpace': 'pre-wrap'}),
         ], style={'marginBottom': '10px'}))
@@ -587,7 +587,7 @@ def update_info_panel(selected_doc, results_json):
                            style={'color': color}),
                 html.Span(f' — {eng.DIAGNOSIS_LABELS_RU.get(diag, diag)} (Q={row["Q"]:.3f})',
                           style={'fontSize': '11px', 'color': '#666'}),
-                html.Div(model_text[:1000] + ('...' if len(model_text) > 1000 else ''),
+                html.Div(model_text[:1500] + ('...' if len(model_text) > 1500 else ''),
                          style={'padding': '6px', 'background': f'{color}11',
                                 'borderLeft': f'3px solid {color}', 'borderRadius': '4px',
                                 'fontSize': '12px', 'marginTop': '4px', 'whiteSpace': 'pre-wrap'}),
