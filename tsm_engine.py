@@ -51,12 +51,17 @@ SEMANTIC_MODES = {
 }
 
 LEXICAL_LABELS = {
-    'rouge1': 'ROUGE-1', 'rouge2': 'ROUGE-2', 'rougeL': 'ROUGE-L',
-    'bleu': 'BLEU', 'chrf': 'chrF++', 'meteor': 'METEOR',
+    'rouge1': 'ROUGE-1', 
+    'rouge2': 'ROUGE-2', 
+    'rougeL': 'ROUGE-L',
+    'bleu': 'BLEU', 
+    'chrf': 'chrF++', 
+    'meteor': 'METEOR',
 }
 
 SEMANTIC_LABELS = {
-    'bleurt': 'BLEURT', 'bertscore': 'BERTScore (F1)',
+    'bleurt': 'BLEURT', 
+    'bertscore': 'BERTScore (F1)',
 }
 
 

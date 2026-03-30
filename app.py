@@ -877,13 +877,19 @@ def _build_manual_results_ui(result, all_metrics, thresholds, results_json,
 
         ], style={'width': '380px', 'minWidth': '340px'}),
 
-        # ПРАВАЯ КОЛОНКА: Scatter plot
+        # ПРАВАЯ КОЛОНКА: 2D + 3D scatter
         html.Div([
             dcc.Graph(
                 id='graph-manual-scatter',
                 figure=_make_manual_scatter(result, thresholds, results_json),
                 config={'displayModeBar': True, 'displaylogo': False},
                 style={'height': '500px'},
+            ),
+            dcc.Graph(
+                id='graph-manual-3d',
+                figure=_make_manual_scatter_3d(result, thresholds, results_json),
+                config={'displayModeBar': True, 'displaylogo': False},
+                style={'height': '550px', 'marginTop': '10px', 'border': '1px solid #ddd'},
             ),
         ], style={'flex': '1', 'minWidth': '400px'}),
 
@@ -1058,6 +1064,109 @@ def _make_manual_scatter(result, thresholds, results_json):
     )
     fig.update_xaxes(gridcolor='#eee', gridwidth=0.5)
     fig.update_yaxes(gridcolor='#eee', gridwidth=0.5)
+
+    return fig
+
+
+def _make_manual_scatter_3d(result, thresholds, results_json):
+    """3D scatter: фон моделей + точка ручного реферата (z_lex × z_sem × z_comp)."""
+    fig = go.Figure()
+
+    # Фоновые точки моделей
+    if results_json:
+        try:
+            df = pd.read_json(results_json, orient='records')
+            symbols = ['circle', 'square', 'diamond', 'cross', 'x', 'circle-open',
+                       'square-open', 'diamond-open']
+            models = sorted(df['model'].unique())
+
+            for i, model in enumerate(models):
+                sub = df[df['model'] == model]
+                model_label = MODEL_SHORT.get(model, model)
+                fig.add_trace(go.Scatter3d(
+                    x=sub['z_lex'], y=sub['z_sem'], z=sub['z_comp'],
+                    mode='markers',
+                    marker=dict(
+                        color=[eng.DIAGNOSIS_COLORS.get(d, '#ccc') for d in sub['diagnosis_type']],
+                        size=3, opacity=0.2,
+                        symbol=symbols[i % len(symbols)],
+                    ),
+                    name=model_label,
+                    hoverinfo='skip',
+                ))
+        except Exception:
+            pass
+
+    # Пороговый параллелепипед
+    if thresholds:
+        tll = thresholds.get('tau_lex_lower', -2)
+        tlu = thresholds.get('tau_lex_upper', 2)
+        tsl = thresholds.get('tau_sem_lower', -2)
+        tsu = thresholds.get('tau_sem_upper', 2)
+        tcl = thresholds.get('tau_comp_lower', -2)
+        tcu = thresholds.get('tau_comp_upper', 2)
+
+        edges_x, edges_y, edges_z = [], [], []
+        for x0, x1 in [(tll, tlu)]:
+            for y in [tsl, tsu]:
+                for z in [tcl, tcu]:
+                    edges_x += [x0, x1, None]
+                    edges_y += [y, y, None]
+                    edges_z += [z, z, None]
+        for y0, y1 in [(tsl, tsu)]:
+            for x in [tll, tlu]:
+                for z in [tcl, tcu]:
+                    edges_x += [x, x, None]
+                    edges_y += [y0, y1, None]
+                    edges_z += [z, z, None]
+        for z0, z1 in [(tcl, tcu)]:
+            for x in [tll, tlu]:
+                for y in [tsl, tsu]:
+                    edges_x += [x, x, None]
+                    edges_y += [y, y, None]
+                    edges_z += [z0, z1, None]
+
+        fig.add_trace(go.Scatter3d(
+            x=edges_x, y=edges_y, z=edges_z,
+            mode='lines', line=dict(color='#2ecc71', width=2, dash='dash'),
+            name='Целевая зона', showlegend=True,
+        ))
+
+    # Точка ручного реферата
+    diag = result['diagnosis_type']
+    diag_color = eng.DIAGNOSIS_COLORS.get(diag, '#ccc')
+    diag_label = eng.DIAGNOSIS_LABELS_RU.get(diag, diag)
+
+    fig.add_trace(go.Scatter3d(
+        x=[result['z_lex']], y=[result['z_sem']], z=[result['z_comp']],
+        mode='markers+text',
+        marker=dict(color=diag_color, size=10, symbol='diamond',
+                    line=dict(width=2, color='#2c3e50')),
+        text=[diag_label],
+        textposition='top center',
+        textfont=dict(size=12, color=diag_color),
+        name='Ручной реферат',
+        hovertemplate=(
+            f'Ручной реферат<br>'
+            f'z_lex=%{{x:.3f}}<br>'
+            f'z_sem=%{{y:.3f}}<br>'
+            f'z_comp=%{{z:.3f}}<br>'
+            f'Q={result["Q"]:.4f}<br>'
+            f'{diag_label}<extra></extra>'
+        ),
+        showlegend=True,
+    ))
+
+    fig.update_layout(
+        title=dict(text='3D: позиция реферата (z_lex × z_sem × z_comp)', font=dict(size=13)),
+        scene=dict(
+            xaxis_title='z_lex', yaxis_title='z_sem', zaxis_title='z_comp',
+            camera=dict(eye=dict(x=1.5, y=-1.5, z=1.0)),
+        ),
+        margin=dict(l=0, r=0, t=35, b=0),
+        height=550,
+        legend=dict(font=dict(size=11)),
+    )
 
     return fig
 
