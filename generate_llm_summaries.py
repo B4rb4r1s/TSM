@@ -15,12 +15,17 @@ generate_llm_summaries.py
   python generate_llm_summaries.py --models qwen2.5:7b mistral:7b
   python generate_llm_summaries.py --rows 5             # тест на 5 строках
   python generate_llm_summaries.py --csv path/to/other.csv
+
+  python generate_llm_summaries.py --json data-tables/dataset-480.json --max-keywords 20 --min-score 0.3 --rows 5
 """
 
 import argparse
+import json
 import sys
 import time
 from pathlib import Path
+
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 import requests
@@ -29,6 +34,7 @@ from tqdm import tqdm
 # ─────────────────────────── КОНФИГУРАЦИЯ ────────────────────────────────────
 
 CSV_PATH = Path(__file__).parent / "data-tables" / "data-full.csv"
+JSON_PATH = Path(__file__).parent / "data-tables" / "dataset-480.json"
 
 OLLAMA_BASE_URL = "http://localhost:11434"
 
@@ -36,8 +42,8 @@ OLLAMA_BASE_URL = "http://localhost:11434"
 # Каждая модель → колонка summary_<model> (двоеточия/слэши заменяются на _).
 # Закомментируйте ненужные или добавьте свои.
 DEFAULT_MODELS = [
-    "forzer/GigaChat3-10B-A1.8B:latest",
-    # "qwen2.5:7b",
+    # "forzer/GigaChat3-10B-A1.8B:latest",
+    "qwen2.5:7b",
     # "qwen2.5:14b",
     # "saiga_llama3:8b",
     # "mistral:7b",
@@ -46,23 +52,30 @@ DEFAULT_MODELS = [
 
 # Системный промпт: инструкция для модели
 SYSTEM_PROMPT = (
-    "Ты — научный редактор. Твоя задача — составить краткий реферат "
+    "Ты — опытный научный редактор. Твоя задача — составить краткий реферат "
     "научной статьи на русском языке. Реферат должен:\n"
     "1) передавать цель исследования, методы, результаты и выводы;\n"
     "2) быть написан в безличной научной форме;\n"
-    "3) содержать от 150 до 300 слов;\n"
+    "3) содержать от 100 до 200 слов;\n"
     "4) не содержать ничего кроме самого текста реферата — "
-    "никаких заголовков, нумерованных пунктов, пояснений."
+    "никаких заголовков, нумерованных пунктов, пояснений;\n"
+    "5) опираться на Ключевые слова из запроса пользователя:\n"
+    "  - вес Ключевого слова показывает, насколько оно важно для текста реферата;\n"
+    "  - допускаетя использовать НЕ ВСЕ Ключевые слова, а только необходимые."
 )
 
 # Шаблон пользовательского сообщения
-USER_PROMPT_TEMPLATE = "Составь реферат следующей научной статьи:\n\n{text}"
+USER_PROMPT_TEMPLATE = "Составь реферат следующей научной статьи.\n\nКлючевые слова: {keywords}\n\nПолный текс: {text}"
 
 # Параметры генерации Ollama
 OLLAMA_OPTIONS = {
     "temperature": 0.3,
     "num_predict": 1024,  # максимум токенов в ответе
 }
+
+# Параметры фильтрации ключевых слов
+MAX_KEYWORDS = 20       # максимум ключевых слов в промпте
+MIN_KEYWORD_SCORE = 0.1 # минимальный score для включения
 
 # Пауза между запросами (секунды)
 REQUEST_DELAY = 0.5
@@ -75,8 +88,9 @@ REQUEST_TIMEOUT = 300
 
 def col_name(model: str) -> str:
     """Имя модели → имя колонки: 'qwen2.5:7b' → 'summary_qwen2.5_7b'."""
-    safe = model.replace(":", "_").replace("/", "_")
-    return f"summary_{safe}"
+    # safe = model.replace(":", "_").replace("/", "_")
+    # return f"summary_{safe}"
+    return "KGSo_qwen2.5"
 
 
 def check_ollama() -> bool:
@@ -97,7 +111,71 @@ def list_models() -> list[str]:
         return []
 
 
-def generate(model: str, text: str) -> str | None:
+def _format_keywords(
+    keywords: List[Dict[str, Any]],
+    max_keywords: int,
+    min_score: float,
+) -> str:
+    """Форматирует ключевые слова в строку для промпта.
+
+    Сортирует по score (убывание), берёт top-N, фильтрует по min_score.
+    """
+    if not keywords:
+        return ""
+
+    filtered = [
+        kw for kw in keywords
+        if isinstance(kw, dict) and kw.get("score", 0) >= min_score
+    ]
+    filtered.sort(key=lambda x: x.get("score", 0), reverse=True)
+    filtered = filtered[:max_keywords]
+
+    parts = []
+    for kw in filtered:
+        surface = kw.get("surface_form", kw.get("keyword", ""))
+        score = kw.get("score", 0)
+        parts.append(f"{surface} ({score:.2f})")
+
+    return ", ".join(parts)
+
+
+def _normalize_text(text: str) -> str:
+    """Нормализация текста для сопоставления: убираем пробелы, нижний регистр."""
+    return " ".join(text.lower().split())[:500]
+
+
+def load_keywords(json_path: Path) -> Dict[str, List[Dict[str, Any]]]:
+    """Загружает ключевые слова из JSON и строит словарь text_prefix → keywords.
+
+    Сопоставление записей JSON со строками CSV выполняется по первым 500
+    символам нормализованного текста (без лишних пробелов, в нижнем регистре).
+    """
+    with open(json_path, encoding="utf-8") as f:
+        data = json.load(f)
+
+    mapping: Dict[str, List[Dict[str, Any]]] = {}
+    for entry in data:
+        text = entry.get("text", "")
+        keywords = entry.get("keywords", [])
+        if text and keywords:
+            key = _normalize_text(text)
+            mapping[key] = keywords
+
+    return mapping
+
+
+def get_keywords_for_row(
+    source_text: str,
+    keywords_map: Dict[str, List[Dict[str, Any]]],
+) -> List[Dict[str, Any]]:
+    """Находит ключевые слова для строки CSV по совпадению текста."""
+    if not source_text:
+        return []
+    key = _normalize_text(source_text)
+    return keywords_map.get(key, [])
+
+
+def generate(model: str, keywords: str, text: str) -> str | None:
     """
     Запрашивает реферат у Ollama.
     Возвращает текст реферата или None при ошибке.
@@ -106,7 +184,7 @@ def generate(model: str, text: str) -> str | None:
         "model": model,
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": USER_PROMPT_TEMPLATE.format(text=text)},
+            {"role": "user", "content": USER_PROMPT_TEMPLATE.format(keywords=keywords, text=text)},
         ],
         "stream": False,
         "options": OLLAMA_OPTIONS,
@@ -153,6 +231,9 @@ def run_model(
     overwrite: bool,
     max_rows: int | None,
     csv_path: Path,
+    keywords_map: Dict[str, List[Dict[str, Any]]] | None = None,
+    max_keywords: int = MAX_KEYWORDS,
+    min_keyword_score: float = MIN_KEYWORD_SCORE,
 ) -> int:
     """
     Генерирует рефераты для одной модели, сохраняя CSV после каждой строки.
@@ -197,8 +278,14 @@ def run_model(
                 tqdm.write(f"    [SKIP] id={row_id}: пустой source_text")
                 continue
 
+            # Получаем и форматируем ключевые слова
+            kw_str = ""
+            if keywords_map:
+                kw_list = get_keywords_for_row(text, keywords_map)
+                kw_str = _format_keywords(kw_list, max_keywords, min_keyword_score)
+
             t0 = time.time()
-            summary = generate(model, text)
+            summary = generate(model, kw_str, text)
             elapsed = time.time() - t0
 
             if summary is not None:
@@ -236,6 +323,18 @@ def main() -> None:
     parser.add_argument(
         "--csv", type=Path, default=CSV_PATH, metavar="PATH",
         help=f"Путь к CSV-файлу (по умолчанию: {CSV_PATH})",
+    )
+    parser.add_argument(
+        "--json", type=Path, default=JSON_PATH, metavar="PATH",
+        help=f"Путь к JSON с ключевыми словами (по умолчанию: {JSON_PATH})",
+    )
+    parser.add_argument(
+        "--max-keywords", type=int, default=MAX_KEYWORDS, metavar="N",
+        help=f"Максимум ключевых слов в промпте (по умолчанию: {MAX_KEYWORDS})",
+    )
+    parser.add_argument(
+        "--min-score", type=float, default=MIN_KEYWORD_SCORE, metavar="F",
+        help=f"Минимальный score ключевого слова (по умолчанию: {MIN_KEYWORD_SCORE})",
     )
     args = parser.parse_args()
 
@@ -280,6 +379,17 @@ def main() -> None:
     if args.rows:
         print(f"[TEST] Ограничение: первые {args.rows} строк")
 
+    # ── Загрузка ключевых слов ───────────────────────────────────────────────
+
+    keywords_map = None
+    if args.json.exists():
+        print(f"\nКлючевые слова: {args.json}")
+        keywords_map = load_keywords(args.json)
+        print(f"Загружено записей с ключевыми словами: {len(keywords_map)}")
+    else:
+        print(f"\n[WARN] JSON с ключевыми словами не найден: {args.json}")
+        print("       Генерация будет выполнена без ключевых слов.")
+
     # ── Определение режима перезаписи ─────────────────────────────────────────
 
     overwrite = args.overwrite
@@ -295,7 +405,10 @@ def main() -> None:
 
     total = 0
     for model in args.models:
-        count = run_model(df, model, overwrite, args.rows, args.csv)
+        count = run_model(
+            df, model, overwrite, args.rows, args.csv,
+            keywords_map, args.max_keywords, args.min_score,
+        )
         total += count
 
     # ── Итог ──────────────────────────────────────────────────────────────────
