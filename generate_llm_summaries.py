@@ -1,21 +1,25 @@
 """
 generate_llm_summaries.py
 
-Генерация рефератов научных текстов с помощью локальных LLM через Ollama.
+Генерация рефератов научных текстов с помощью локальных LLM.
+Поддерживаются два бэкенда: Ollama (по умолчанию) и HuggingFace Transformers.
 Результаты записываются в data-tables/data-full.csv в колонки summary_<model>.
 
 Требования:
-  - Ollama запущен: ollama serve
-  - Нужные модели загружены: ollama pull <model>
-  - pip install pandas requests tqdm
+  Ollama:       ollama serve + ollama pull <model> ; pip install pandas requests tqdm
+  HuggingFace:  pip install pandas tqdm transformers torch accelerate
 
 Использование:
+  # Ollama (по умолчанию)
   python generate_llm_summaries.py
-  python generate_llm_summaries.py --overwrite          # перезаписать все значения
   python generate_llm_summaries.py --models qwen2.5:7b mistral:7b
-  python generate_llm_summaries.py --rows 5             # тест на 5 строках
-  python generate_llm_summaries.py --csv path/to/other.csv
+  python generate_llm_summaries.py --rows 5
 
+  # HuggingFace
+  python generate_llm_summaries.py --backend huggingface --models Qwen/Qwen2.5-7B-Instruct
+  python generate_llm_summaries.py --backend huggingface --models Qwen/Qwen2.5-7B-Instruct --hf-device cuda --hf-max-new-tokens 512
+
+  # Ключевые слова
   python generate_llm_summaries.py --json data-tables/dataset-480.json --max-keywords 20 --min-score 0.3 --rows 5
 """
 
@@ -76,6 +80,13 @@ OLLAMA_OPTIONS = {
 # Параметры фильтрации ключевых слов
 MAX_KEYWORDS = 20       # максимум ключевых слов в промпте
 MIN_KEYWORD_SCORE = 0.1 # минимальный score для включения
+
+# ── HuggingFace ──────────────────────────────────────────────────────────────
+
+HF_DEFAULT_DEVICE = "auto"          # "cpu", "cuda", "cuda:0", "auto"
+HF_DEFAULT_MAX_NEW_TOKENS = 1024
+HF_DEFAULT_TEMPERATURE = 0.3
+HF_DEFAULT_DTYPE = "auto"           # "auto", "float16", "bfloat16", "float32"
 
 # Пауза между запросами (секунды)
 REQUEST_DELAY = 0.5
@@ -208,6 +219,116 @@ def generate(model: str, keywords: str, text: str) -> str | None:
         return None
 
 
+# ─────────────────────────── HUGGINGFACE БЭКЕНД ─────────────────────────────
+
+
+def load_hf_model(
+    model_name: str,
+    device: str = HF_DEFAULT_DEVICE,
+    dtype: str = HF_DEFAULT_DTYPE,
+) -> Tuple[Any, Any]:
+    """Загружает модель и токенизатор HuggingFace.
+
+    Возвращает кортеж (model, tokenizer).
+    Требует установленных transformers и torch.
+    """
+    try:
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+        import torch
+    except ImportError as e:
+        print(
+            f"\n[ERROR] Для бэкенда huggingface необходимы пакеты:\n"
+            f"        pip install transformers torch accelerate\n"
+            f"        Ошибка: {e}"
+        )
+        sys.exit(1)
+
+    dtype_map = {
+        "float16": torch.float16,
+        "bfloat16": torch.bfloat16,
+        "float32": torch.float32,
+        "auto": "auto",
+    }
+    torch_dtype = dtype_map.get(dtype, "auto")
+
+    print(f"\n  Загрузка модели HuggingFace: {model_name}")
+    print(f"  Device: {device}, dtype: {dtype}")
+
+    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name,
+        torch_dtype=torch_dtype,
+        device_map=device,
+        trust_remote_code=True,
+    )
+    model.eval()
+
+    print(f"  Модель загружена: {model_name}")
+    return model, tokenizer
+
+
+def generate_hf(
+    hf_model: Any,
+    hf_tokenizer: Any,
+    keywords: str,
+    text: str,
+    max_new_tokens: int = HF_DEFAULT_MAX_NEW_TOKENS,
+    temperature: float = HF_DEFAULT_TEMPERATURE,
+) -> str | None:
+    """Генерирует реферат с помощью HuggingFace модели.
+
+    Использует chat template токенизатора (если поддерживается),
+    иначе формирует промпт вручную.
+    """
+    try:
+        import torch
+    except ImportError:
+        return None
+
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": USER_PROMPT_TEMPLATE.format(keywords=keywords, text=text)},
+    ]
+
+    try:
+        # Пробуем chat template (Qwen, Llama-chat, Mistral-Instruct и др.)
+        input_text = hf_tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True,
+        )
+    except Exception:
+        # Fallback: простой формат без chat template
+        input_text = (
+            f"### System:\n{SYSTEM_PROMPT}\n\n"
+            f"### User:\n{USER_PROMPT_TEMPLATE.format(keywords=keywords, text=text)}\n\n"
+            f"### Assistant:\n"
+        )
+
+    try:
+        inputs = hf_tokenizer(input_text, return_tensors="pt")
+        inputs = {k: v.to(hf_model.device) for k, v in inputs.items()}
+        input_len = inputs["input_ids"].shape[1]
+
+        gen_kwargs = {
+            "max_new_tokens": max_new_tokens,
+            "do_sample": temperature > 0,
+            "pad_token_id": hf_tokenizer.eos_token_id,
+        }
+        if temperature > 0:
+            gen_kwargs["temperature"] = temperature
+
+        with torch.no_grad():
+            output = hf_model.generate(**inputs, **gen_kwargs)
+
+        # Декодируем только новые токены (без промпта)
+        new_tokens = output[0][input_len:]
+        result = hf_tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
+        return result if result else None
+
+    except Exception as e:
+        tqdm.write(f"    [ERROR] HuggingFace генерация: {e}")
+        return None
+
+
 # ─────────────────────────── ОСНОВНАЯ ЛОГИКА ─────────────────────────────────
 
 
@@ -234,6 +355,11 @@ def run_model(
     keywords_map: Dict[str, List[Dict[str, Any]]] | None = None,
     max_keywords: int = MAX_KEYWORDS,
     min_keyword_score: float = MIN_KEYWORD_SCORE,
+    backend: str = "ollama",
+    hf_model: Any = None,
+    hf_tokenizer: Any = None,
+    hf_max_new_tokens: int = HF_DEFAULT_MAX_NEW_TOKENS,
+    hf_temperature: float = HF_DEFAULT_TEMPERATURE,
 ) -> int:
     """
     Генерирует рефераты для одной модели, сохраняя CSV после каждой строки.
@@ -285,7 +411,13 @@ def run_model(
                 kw_str = _format_keywords(kw_list, max_keywords, min_keyword_score)
 
             t0 = time.time()
-            summary = generate(model, kw_str, text)
+            if backend == "huggingface":
+                summary = generate_hf(
+                    hf_model, hf_tokenizer, kw_str, text,
+                    hf_max_new_tokens, hf_temperature,
+                )
+            else:
+                summary = generate(model, kw_str, text)
             elapsed = time.time() - t0
 
             if summary is not None:
@@ -306,11 +438,15 @@ def run_model(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Генерация рефератов локальными LLM через Ollama"
+        description="Генерация рефератов локальными LLM (Ollama / HuggingFace)"
     )
     parser.add_argument(
-        "--models", nargs="+", default=DEFAULT_MODELS, metavar="MODEL",
-        help="Список моделей Ollama (например: qwen2.5:7b mistral:7b)",
+        "--backend", choices=["ollama", "huggingface"], default="ollama",
+        help="Бэкенд для генерации (по умолчанию: ollama)",
+    )
+    parser.add_argument(
+        "--models", nargs="+", default=None, metavar="MODEL",
+        help="Список моделей (Ollama: qwen2.5:7b; HF: Qwen/Qwen2.5-7B-Instruct)",
     )
     parser.add_argument(
         "--overwrite", action="store_true",
@@ -336,35 +472,71 @@ def main() -> None:
         "--min-score", type=float, default=MIN_KEYWORD_SCORE, metavar="F",
         help=f"Минимальный score ключевого слова (по умолчанию: {MIN_KEYWORD_SCORE})",
     )
+    # HuggingFace-специфичные аргументы
+    parser.add_argument(
+        "--hf-device", default=HF_DEFAULT_DEVICE, metavar="DEV",
+        help=f"Устройство для HF модели: cpu, cuda, cuda:0, auto (по умолчанию: {HF_DEFAULT_DEVICE})",
+    )
+    parser.add_argument(
+        "--hf-dtype", default=HF_DEFAULT_DTYPE,
+        choices=["auto", "float16", "bfloat16", "float32"],
+        help=f"Тип данных для HF модели (по умолчанию: {HF_DEFAULT_DTYPE})",
+    )
+    parser.add_argument(
+        "--hf-max-new-tokens", type=int, default=HF_DEFAULT_MAX_NEW_TOKENS, metavar="N",
+        help=f"Макс. новых токенов при HF генерации (по умолчанию: {HF_DEFAULT_MAX_NEW_TOKENS})",
+    )
+    parser.add_argument(
+        "--hf-temperature", type=float, default=HF_DEFAULT_TEMPERATURE, metavar="F",
+        help=f"Temperature для HF генерации (по умолчанию: {HF_DEFAULT_TEMPERATURE})",
+    )
     args = parser.parse_args()
 
+    # Модели по умолчанию зависят от бэкенда
+    if args.models is None:
+        args.models = DEFAULT_MODELS
+
+    backend_label = "HuggingFace" if args.backend == "huggingface" else "Ollama"
     print("=" * 60)
-    print("  Генератор рефератов  ·  Ollama LLM")
+    print(f"  Генератор рефератов  ·  {backend_label}")
     print("=" * 60)
 
-    # ── Проверка Ollama ───────────────────────────────────────────────────────
+    # ── Проверка бэкенда ─────────────────────────────────────────────────────
 
-    if not check_ollama():
-        print(
-            "\n[ERROR] Ollama не запущен или недоступен.\n"
-            "        Запустите в терминале: ollama serve"
-        )
-        sys.exit(1)
+    hf_model_obj = None
+    hf_tokenizer_obj = None
 
-    available = list_models()
-    print(f"\nЗагруженные модели: {available or '(нет)'}")
-
-    missing = [m for m in args.models if m not in available]
-    if missing:
-        print(f"\n[WARN] Не найдены в Ollama: {missing}")
-        print("       Загрузите: ollama pull <model>")
-        ans = input("Продолжить с доступными моделями? [Y/n]: ").strip().lower()
-        if ans in ("n", "no", "н", "нет"):
-            sys.exit(0)
-        args.models = [m for m in args.models if m in available]
-        if not args.models:
-            print("[ERROR] Нет доступных моделей.")
+    if args.backend == "ollama":
+        if not check_ollama():
+            print(
+                "\n[ERROR] Ollama не запущен или недоступен.\n"
+                "        Запустите в терминале: ollama serve"
+            )
             sys.exit(1)
+
+        available = list_models()
+        print(f"\nЗагруженные модели: {available or '(нет)'}")
+
+        missing = [m for m in args.models if m not in available]
+        if missing:
+            print(f"\n[WARN] Не найдены в Ollama: {missing}")
+            print("       Загрузите: ollama pull <model>")
+            ans = input("Продолжить с доступными моделями? [Y/n]: ").strip().lower()
+            if ans in ("n", "no", "н", "нет"):
+                sys.exit(0)
+            args.models = [m for m in args.models if m in available]
+            if not args.models:
+                print("[ERROR] Нет доступных моделей.")
+                sys.exit(1)
+    else:
+        # HuggingFace: загрузка первой модели
+        # (для HF обычно используется одна модель за запуск)
+        if not args.models:
+            print("\n[ERROR] Укажите модель: --models Qwen/Qwen2.5-7B-Instruct")
+            sys.exit(1)
+        hf_model_obj, hf_tokenizer_obj = load_hf_model(
+            args.models[0], args.hf_device, args.hf_dtype,
+        )
 
     # ── Загрузка данных ───────────────────────────────────────────────────────
 
@@ -405,9 +577,20 @@ def main() -> None:
 
     total = 0
     for model in args.models:
+        # Для HF: если >1 модели, перезагружаем (первая уже загружена)
+        if args.backend == "huggingface" and model != args.models[0]:
+            hf_model_obj, hf_tokenizer_obj = load_hf_model(
+                model, args.hf_device, args.hf_dtype,
+            )
+
         count = run_model(
             df, model, overwrite, args.rows, args.csv,
             keywords_map, args.max_keywords, args.min_score,
+            backend=args.backend,
+            hf_model=hf_model_obj,
+            hf_tokenizer=hf_tokenizer_obj,
+            hf_max_new_tokens=args.hf_max_new_tokens,
+            hf_temperature=args.hf_temperature,
         )
         total += count
 
