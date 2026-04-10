@@ -573,19 +573,19 @@ def update_info_panel(selected_doc, results_json):
     # Тексты
     if texts.get('target_summary'):
         target = texts['target_summary']
-        children.append(html.Div([
-            html.Strong('Авторский реферат', style={'color': '#2c3e50'}),
-            html.Span(f' ({len(target)} симв.)', style={'color': '#999', 'fontSize': '11px'}),
-            html.Div(target[:1500] + ('...' if len(target) > 1500 else ''),
-                     style={'padding': '6px', 'background': '#f0f0f0', 'borderRadius': '4px',
-                            'fontSize': '12px', 'marginTop': '4px', 'whiteSpace': 'pre-wrap'}),
-        ], style={'marginBottom': '10px'}))
+        children.append(_collapsible_text_block(
+            title='Авторский реферат',
+            text=target,
+            border_color='#2c3e50',
+            bg_color='#f0f0f0',
+        ))
 
-    # Рефераты моделей (показать лучший и худший)
+    # Рефераты моделей
     if len(sub) > 0:
         best = sub.iloc[0]
         worst = sub.iloc[-1]
 
+        # Лучший и худший
         for label, row in [('Лучший', best), ('Худший', worst)]:
             model_col = row['model']
             model_texts = tsm_db.load_texts_from_db(db, pub_id, model_col)
@@ -594,18 +594,86 @@ def update_info_panel(selected_doc, results_json):
                 continue
             diag = row['diagnosis_type']
             color = eng.DIAGNOSIS_COLORS.get(diag, '#ccc')
-            children.append(html.Div([
-                html.Strong(f'{label}: {MODEL_SHORT.get(model_col, model_col)}',
-                           style={'color': color}),
-                html.Span(f' — {eng.DIAGNOSIS_LABELS_RU.get(diag, diag)} (Q={row["Q"]:.3f})',
-                          style={'fontSize': '11px', 'color': '#666'}),
-                html.Div(model_text[:1500] + ('...' if len(model_text) > 1500 else ''),
-                         style={'padding': '6px', 'background': f'{color}11',
-                                'borderLeft': f'3px solid {color}', 'borderRadius': '4px',
-                                'fontSize': '12px', 'marginTop': '4px', 'whiteSpace': 'pre-wrap'}),
-            ], style={'marginBottom': '10px'}))
+            children.append(_collapsible_text_block(
+                title=f'{label}: {MODEL_SHORT.get(model_col, model_col)}',
+                subtitle=f'{eng.DIAGNOSIS_LABELS_RU.get(diag, diag)} (Q={row["Q"]:.3f})',
+                text=model_text,
+                border_color=color,
+                bg_color=f'{color}11',
+                open_default=True,
+            ))
+
+        # Остальные модели
+        shown_models = {best['model'], worst['model']}
+        rest = sub[~sub['model'].isin(shown_models)]
+        if len(rest) > 0:
+            rest_blocks = []
+            for _, row in rest.iterrows():
+                model_col = row['model']
+                model_texts = tsm_db.load_texts_from_db(db, pub_id, model_col)
+                model_text = model_texts.get('model_summary', '')
+                if not model_text:
+                    continue
+                diag = row['diagnosis_type']
+                color = eng.DIAGNOSIS_COLORS.get(diag, '#ccc')
+                rest_blocks.append(_collapsible_text_block(
+                    title=MODEL_SHORT.get(model_col, model_col),
+                    subtitle=f'{eng.DIAGNOSIS_LABELS_RU.get(diag, diag)} (Q={row["Q"]:.3f})',
+                    text=model_text,
+                    border_color=color,
+                    bg_color=f'{color}11',
+                    open_default=False,
+                ))
+
+            if rest_blocks:
+                children.append(html.Details([
+                    html.Summary(f'Остальные модели ({len(rest_blocks)})',
+                                 style={'cursor': 'pointer', 'fontWeight': 'bold',
+                                        'fontSize': '13px', 'padding': '6px 0',
+                                        'color': '#2c3e50'}),
+                    html.Div(rest_blocks, style={'paddingTop': '6px'}),
+                ], open=False, style={'marginBottom': '10px',
+                                      'border': '1px solid #ddd', 'borderRadius': '4px',
+                                      'padding': '6px 10px'}))
 
     return children
+
+
+def _collapsible_text_block(title, text, border_color='#ccc', bg_color='#f8f8f8',
+                            subtitle=None, open_default=True, preview_len=400):
+    """Блок текста со сворачиванием, если текст длинный.
+
+    Короткий текст (≤ preview_len) показывается целиком.
+    Длинный — обрезанное превью + <details> с полным текстом.
+    """
+    title_parts = [html.Strong(title, style={'color': border_color})]
+    if subtitle:
+        title_parts.append(html.Span(f' — {subtitle}',
+                                     style={'fontSize': '11px', 'color': '#666'}))
+    title_parts.append(html.Span(f' ({len(text)} симв.)',
+                                 style={'color': '#999', 'fontSize': '11px'}))
+
+    text_style = {
+        'padding': '6px', 'background': bg_color,
+        'borderLeft': f'3px solid {border_color}', 'borderRadius': '4px',
+        'fontSize': '12px', 'marginTop': '4px', 'whiteSpace': 'pre-wrap',
+    }
+
+    if len(text) <= preview_len:
+        body = html.Div(text, style=text_style)
+    else:
+        body = html.Div([
+            html.Div(text[:preview_len] + '…', style=text_style),
+            html.Details([
+                html.Summary('Развернуть полностью',
+                             style={'cursor': 'pointer', 'fontSize': '11px',
+                                    'color': '#3498db', 'padding': '4px 0',
+                                    'userSelect': 'none'}),
+                html.Div(text, style=text_style),
+            ], open=False),
+        ])
+
+    return html.Div([html.Div(title_parts), body], style={'marginBottom': '10px'})
 
 
 # ═══════════════════════════════════════════════════════════════════════

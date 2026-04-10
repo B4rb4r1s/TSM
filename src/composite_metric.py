@@ -22,7 +22,8 @@ def compute_quality_score(df_diagnosed: pd.DataFrame,
                           gamma: float = 0.15,
                           delta: float = 0.15,
                           h: float = 2,
-                          k: float = 2) -> pd.DataFrame:
+                          k: float = 2,
+                          verbose: bool = True) -> pd.DataFrame:
     """
     Вычисление композитной метрики качества Q.
 
@@ -65,18 +66,20 @@ def compute_quality_score(df_diagnosed: pd.DataFrame,
         df_merged['Q'] = alpha * df_merged['q_sem'] + beta * df_merged['q_lex'] + gamma * df_merged['q_align']
         weight_str = f"α={alpha} (семантика), β={beta} (лексика), γ={gamma} (выравнивание)"
 
-    print("\n" + "="*70)
-    print("ЭТАП 4: КОМПОЗИТНАЯ МЕТРИКА КАЧЕСТВА")
-    print("="*70)
-    print(f"\nВеса: {weight_str}")
+    if verbose:
+        print("\n" + "="*70)
+        print("ЭТАП 4: КОМПОЗИТНАЯ МЕТРИКА КАЧЕСТВА")
+        print("="*70)
+        print(f"\nВеса: {weight_str}")
 
-    print(f"\nСредние значения Q по моделям:")
-    q_by_model = df_merged.groupby('model')['Q'].agg(['mean', 'std', 'min', 'max'])
-    print(q_by_model.round(4))
+        print(f"\nСредние значения Q по моделям:")
+    
+        q_by_model = df_merged.groupby('model')['Q'].agg(['mean', 'std', 'min', 'max'])
+        print(q_by_model.round(4))
 
-    print(f"\n🏆 Рейтинг моделей по Q:")
-    ranking = df_merged.groupby('model')['Q'].mean().sort_values(ascending=False)
-    for rank, (model, q_score) in enumerate(ranking.items(), 1):
-        print(f"   {rank}. {model:20s}: Q = {q_score:.4f}")
+        print(f"\n🏆 Рейтинг моделей по Q:")
+        ranking = df_merged.groupby('model')['Q'].mean().sort_values(ascending=False)
+        for rank, (model, q_score) in enumerate(ranking.items(), 1):
+            print(f"   {rank}. {model:20s}: Q = {q_score:.4f}")
 
     return df_merged
