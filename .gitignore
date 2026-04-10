@@ -2,6 +2,13 @@ __pycache__
 .tsm
 
 *.db
+*.zip
 *.csv
 *.*xls*
 *.png
+
+data-tables/
+FULL*/
+LLMs/
+TSM/
+MERGED*/
