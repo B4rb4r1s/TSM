@@ -69,6 +69,49 @@ MODEL_SHORT = {
 }
 
 
+# -----------------------------------------------------------------------------
+# Версии моделей
+# -----------------------------------------------------------------------------
+
+VERSION_SHORT = {
+    'no_keywords':              '(без КС)',
+    'extracted:KWE':            '(KWE)',
+    'extracted:rutermextract':  '(ruterm)',
+    'extracted:textrank':       '(TextRank)',
+    'extracted:tfidf':          '(TF-IDF)',
+    'abstractive':              '',
+    'extractive':               '',
+}
+
+VERSION_GROUP_LABELS = {
+    'no_keywords':              'Без ключевых слов',
+    'extracted:KWE':            'С КС: KWE',
+    'extracted:rutermextract':  'С КС: rutermextract',
+    'extracted:textrank':       'С КС: TextRank',
+    'extracted:tfidf':          'С КС: TF-IDF',
+    'abstractive':              'Абстрактивные (Seq2Seq)',
+    'extractive':               'Экстрактивные',
+}
+
+VERSION_ORDER = [
+    'no_keywords',
+    'extracted:KWE',
+    'extracted:rutermextract',
+    'extracted:textrank',
+    'extracted:tfidf',
+    'abstractive',
+    'extractive',
+]
+
+
+def make_model_short_label(name: str, version: str) -> str:
+    """Короткое имя для комбинации модель+версия."""
+    base = MODEL_SHORT.get(name, name.split('/')[-1] if '/' in name else name)
+    suffix = VERSION_SHORT.get(version, f'({version})' if version else '')
+    if suffix:
+        return f"{base} {suffix}"
+    return base
+
 
 # =============================================================================
 # 8. ВИЗУАЛИЗАЦИЯ РЕЗУЛЬТАТОВ

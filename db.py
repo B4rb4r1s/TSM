@@ -50,8 +50,11 @@ class Database:
     def conn(self):
         if self._conn is None or self._conn.closed:
             try:
-                self._conn = psycopg.connect(REMOTE_DSN, row_factory=dict_row)
-            except:
+                self._conn = psycopg.connect(
+                    REMOTE_DSN, row_factory=dict_row,
+                    connect_timeout=3,
+                )
+            except Exception:
                 self._conn = psycopg.connect(self.dsn, row_factory=dict_row)
         return self._conn
 

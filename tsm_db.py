@@ -220,7 +220,7 @@ def prepare_dataframe_from_db(
         if name is None or (isinstance(name, float) and pd.isna(name)):
             return None
         if model_label == 'name_version' and version:
-            return f"{name}:{version}"
+            return f"{name}::{version}"
         return name
 
     def _make_label(r):
@@ -439,6 +439,53 @@ def get_model_names_from_db_fast(db: Database, source: str = '480') -> List[str]
         return [row['name'] for row in cur.fetchall()]
 
 
+def get_model_versions_from_db(db: Database, source: str = '480') -> list[dict]:
+    """Все комбинации модель+версия с индикатором наличия метрик.
+
+    Returns
+    -------
+    list[dict]
+        Каждый элемент: {name, version, label, has_metrics}
+    """
+    sql = """
+        WITH model_abs AS (
+            SELECT DISTINCT m.id AS model_id, m.name, m.version
+            FROM abstracts a
+            JOIN publications p ON p.id = a.publication_id
+            JOIN models m ON m.id = a.model_id
+            WHERE a.abstract_type = 'machine' AND p.source = %s
+        ),
+        model_with_metrics AS (
+            SELECT DISTINCT a.model_id
+            FROM similarity_metrics sm
+            JOIN abstracts a ON a.id = sm.abstract_id
+            JOIN publications p ON p.id = sm.publication_id
+            WHERE a.abstract_type = 'machine' AND p.source = %s
+        )
+        SELECT ma.name, ma.version,
+               (mwm.model_id IS NOT NULL) AS has_metrics
+        FROM model_abs ma
+        LEFT JOIN model_with_metrics mwm ON mwm.model_id = ma.model_id
+        ORDER BY ma.version, ma.name
+    """
+    with db.cursor(commit=False) as cur:
+        cur.execute(sql, (source, source))
+        rows = cur.fetchall()
+
+    result = []
+    for r in rows:
+        name = r['name']
+        version = r['version'] or ''
+        label = f"{name}::{version}" if version else name
+        result.append({
+            'name': name,
+            'version': version,
+            'label': label,
+            'has_metrics': bool(r['has_metrics']),
+        })
+    return result
+
+
 def get_available_metric_modes(db: Database, source: str = '480'):
     """Определить доступные lex_mode и sem_mode из метрик в БД.
 
@@ -474,8 +521,14 @@ def get_available_metric_modes(db: Database, source: str = '480'):
 
 
 def load_texts_from_db(db: Database, publication_id: int,
-                       model_name: Optional[str] = None) -> dict:
-    """Загрузить тексты публикации из БД (аналог eng.load_texts для SQLite).
+                       model_label: Optional[str] = None) -> dict:
+    """Загрузить тексты публикации из БД.
+
+    Parameters
+    ----------
+    model_label : str | None
+        Метка модели. Поддерживает формат ``name::version``
+        (версионный) и просто ``name`` (без версии).
 
     Returns
     -------
@@ -494,11 +547,20 @@ def load_texts_from_db(db: Database, publication_id: int,
     if author_abs:
         result['target_summary'] = author_abs[0].get('text') or ''
 
-    # Машинный реферат конкретной модели
-    if model_name:
+    # Машинный реферат конкретной модели (с учётом версии)
+    if model_label:
+        # Разбираем метку: "name::version" или просто "name"
+        if '::' in model_label:
+            m_name, m_version = model_label.split('::', 1)
+        else:
+            m_name, m_version = model_label, None
+
         machine_abs = db.get_abstracts(publication_id, 'machine')
         for a in machine_abs:
-            if a.get('model_name') == model_name:
+            name_match = a.get('model_name') == m_name
+            version_match = (m_version is None or
+                             a.get('model_version') == m_version)
+            if name_match and version_match:
                 result['model_summary'] = a.get('text') or ''
                 break
 

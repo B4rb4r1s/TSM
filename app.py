@@ -24,7 +24,7 @@ import tsm_db
 DEFAULT_SOURCE = '480'          # publications.source в БД
 GRID_COLS = 4                   # колонок в сетке 2D графиков
 
-MODEL_SHORT = config.MODEL_SHORT
+# MODEL_SHORT строится динамически ниже с учётом версий моделей
 
 # ═══════════════════════════════════════════════════════════════════════
 # Инициализация
@@ -33,8 +33,11 @@ MODEL_SHORT = config.MODEL_SHORT
 # Подключение к БД
 db = Database()
 
-# Доступные модели и метрики из БД
-available_models = tsm_db.get_model_names_from_db_fast(db, source=DEFAULT_SOURCE)
+# Доступные модели (с версиями) и метрики из БД
+model_versions_data = tsm_db.get_model_versions_from_db(db, source=DEFAULT_SOURCE)
+MODEL_SHORT = {mv['label']: config.make_model_short_label(mv['name'], mv['version'])
+               for mv in model_versions_data}
+MODEL_SHORT['reference'] = 'АР (эталон)'
 available_lex, available_sem = tsm_db.get_available_metric_modes(db, source=DEFAULT_SOURCE)
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -43,6 +46,73 @@ available_lex, available_sem = tsm_db.get_available_metric_modes(db, source=DEFA
 
 app = dash.Dash(__name__)
 app.title = 'TSM — Трёхфакторная оценка рефератов'
+
+# ═══════════════════════════════════════════════════════════════════════
+# Построение группированного списка моделей
+# ═══════════════════════════════════════════════════════════════════════
+
+def _build_model_groups(model_versions):
+    """Сгруппированные чеклисты моделей по типу версии."""
+    # Группировка по версии
+    version_models = {}
+    seen = set()
+    ordered = []
+
+    for v in config.VERSION_ORDER:
+        mvs = [mv for mv in model_versions if mv['version'] == v]
+        if mvs:
+            version_models[v] = mvs
+            ordered.append(v)
+            seen.add(v)
+
+    for mv in model_versions:
+        v = mv['version']
+        if v not in seen:
+            if v not in version_models:
+                version_models[v] = []
+                ordered.append(v)
+                seen.add(v)
+            version_models[v].append(mv)
+
+    children = []
+    for version in ordered:
+        mvs = version_models[version]
+        group_label = config.VERSION_GROUP_LABELS.get(version, version)
+
+        options = []
+        defaults = []
+        for mv in sorted(mvs, key=lambda x: x['name']):
+            short = config.make_model_short_label(mv['name'], mv['version'])
+            if mv['has_metrics']:
+                opt_label = short
+            else:
+                opt_label = f"{short} [нет метрик]"
+            options.append({
+                'label': opt_label,
+                'value': mv['label'],
+                'disabled': not mv['has_metrics'],
+            })
+            if mv['has_metrics']:
+                defaults.append(mv['label'])
+
+        children.append(html.Div([
+            html.Span(group_label + ':', style={
+                'fontWeight': 'bold', 'fontSize': '12px', 'color': '#555',
+                'minWidth': '200px', 'display': 'inline-block',
+            }),
+            dcc.Checklist(
+                id={'type': 'model-check', 'group': version},
+                options=options,
+                value=defaults,
+                inline=True,
+                style={'fontSize': '12px', 'display': 'inline'},
+                inputStyle={'marginRight': '3px', 'marginLeft': '8px'},
+            ),
+        ], style={'marginBottom': '4px', 'display': 'flex', 'alignItems': 'center',
+                  'flexWrap': 'wrap'}))
+
+    return children
+
 
 # ═══════════════════════════════════════════════════════════════════════
 # Layout — Вкладка 1: Анализ моделей
@@ -164,17 +234,11 @@ tab_models = dcc.Tab(label='Анализ моделей', value='tab-models', ch
             ], style={'display': 'flex', 'alignItems': 'center', 'gap': '4px',
                       'flexWrap': 'wrap', 'marginBottom': '12px'}),
 
-            # Строка 4: Модели
+            # Строка 4: Модели (сгруппированные по версиям)
             html.Div([
-                html.Label('Модели СР:', style={'fontWeight': 'bold', 'fontSize': '13px'}),
-                dcc.Checklist(
-                    id='checklist-models',
-                    options=[{'label': MODEL_SHORT.get(m, m), 'value': m} for m in available_models],
-                    value=available_models,
-                    inline=True,
-                    style={'fontSize': '13px'},
-                    inputStyle={'marginRight': '4px', 'marginLeft': '10px'},
-                ),
+                html.Label('Модели СР:', style={'fontWeight': 'bold', 'fontSize': '13px',
+                                                 'marginBottom': '8px', 'display': 'block'}),
+                html.Div(_build_model_groups(model_versions_data)),
             ], style={'marginBottom': '12px'}),
 
             # Кнопка
@@ -349,11 +413,13 @@ app.layout = html.Div([
     State('input-beta', 'value'),
     State('input-gamma', 'value'),
     State('input-delta', 'value'),
-    State('checklist-models', 'value'),
+    State({'type': 'model-check', 'group': ALL}, 'value'),
 )
 def update_pipeline(n_clicks, lex_mode, sem_mode, rouge_measure, bertscore_measure,
                     threshold_mode, p_low, p_high, tau,
-                    alpha, beta, gamma, delta, selected_models):
+                    alpha, beta, gamma, delta, selected_models_groups):
+    # Собрать выбранные модели из всех групп
+    selected_models = [m for group in (selected_models_groups or []) for m in (group or [])]
     if not selected_models:
         return None, None, None, html.Span('Выберите хотя бы одну модель', style={'color': 'red'})
 
@@ -366,6 +432,7 @@ def update_pipeline(n_clicks, lex_mode, sem_mode, rouge_measure, bertscore_measu
             rouge_measure=rouge_measure,
             bertscore_measure=bertscore_measure or 'f',
             models=selected_models,
+            model_label='name_version',
             verbose=False,
         )
         df, cal, thr = eng.run_pipeline_from_df(
@@ -389,7 +456,7 @@ def update_pipeline(n_clicks, lex_mode, sem_mode, rouge_measure, bertscore_measu
         html.Span(f'μ_sem={cal["mu_sem"]:.4f}  σ_sem={cal["sigma_sem"]:.4f} | '),
         html.Span(f'μ_comp={cal.get("mu_comp", 0):.4f}  σ_comp={cal.get("sigma_comp", 0):.4f} | '),
         html.Span(f'Документов: {cal["n_clean"]} (выбросов: {cal["n_outliers"]}) | '),
-        html.Span(f'Моделей: {len(selected_models)}'),
+        html.Span(f'Моделей: {df["model"].nunique()}'),
     ])
 
     return df.to_json(orient='records'), cal, thr, stats
