@@ -43,25 +43,25 @@ LEXICAL_MODES = {
     'bleu':   ('bleu', None),
     'chrf':   ('chrf', None),
     'meteor': ('meteor', None),
+    'ter':    ('ter', None),
 }
 
 SEMANTIC_MODES = {
-    'bleurt':    ('bleurt', None),
     'bertscore': ('bertscore', 'f1'),
 }
 
 LEXICAL_LABELS = {
-    'rouge1': 'ROUGE-1', 
-    'rouge2': 'ROUGE-2', 
+    'rouge1': 'ROUGE-1',
+    'rouge2': 'ROUGE-2',
     'rougeL': 'ROUGE-L',
-    'bleu': 'BLEU', 
-    'chrf': 'chrF++', 
+    'bleu': 'BLEU',
+    'chrf': 'chrF++',
     'meteor': 'METEOR',
+    'ter': 'TER',
 }
 
 SEMANTIC_LABELS = {
-    'bleurt': 'BLEURT', 
-    'bertscore': 'BERTScore (F1)',
+    'bertscore': 'BERTScore',
 }
 
 
@@ -556,7 +556,8 @@ def compute_quality(df_diagnosed: pd.DataFrame, df_raw: pd.DataFrame,
 # ═══════════════════════════════════════════════════════════════════════
 
 def _extract_metric_value(metrics_block: Dict, lex_mode: str, sem_mode: str,
-                          rouge_measure: str, which: str = 'lex') -> Optional[float]:
+                          rouge_measure: str, which: str = 'lex',
+                          bertscore_measure: str = 'f') -> Optional[float]:
     """Извлечь значение метрики из блока ot_sr или ar_sr."""
     if which == 'lex':
         if lex_mode in ('rouge1', 'rouge2', 'rougeL'):
@@ -567,9 +568,10 @@ def _extract_metric_value(metrics_block: Dict, lex_mode: str, sem_mode: str,
     else:  # sem
         if sem_mode == 'bertscore':
             bs = metrics_block.get('bertscore')
-            return bs.get('f1') if isinstance(bs, dict) else None
-        elif sem_mode == 'bleurt':
-            return metrics_block.get('bleurt')
+            if not isinstance(bs, dict):
+                return None
+            measure_map = {'p': 'precision', 'r': 'recall', 'f': 'f1'}
+            return bs.get(measure_map.get(bertscore_measure, 'f1'))
     return None
 
 
@@ -580,6 +582,7 @@ def evaluate_manual_input(
     lex_mode: str,
     sem_mode: str,
     rouge_measure: str,
+    bertscore_measure: str = 'f',
     alpha: float = 0.45,
     beta: float = 0.25,
     gamma: float = 0.15,
@@ -592,9 +595,10 @@ def evaluate_manual_input(
         metrics_dict: результат metrics_compute.compute_all_metrics()
         calibration: результат calibrate() из основного пайплайна
         thresholds: результат compute_thresholds()
-        lex_mode: режим лексической метрики ('rouge1', 'bleu', 'chrf', 'meteor')
-        sem_mode: режим семантической метрики ('bleurt', 'bertscore')
+        lex_mode: режим лексической метрики ('rouge1', 'bleu', 'chrf', 'meteor', 'ter')
+        sem_mode: режим семантической метрики ('bertscore')
         rouge_measure: мера ROUGE ('p', 'r', 'f')
+        bertscore_measure: мера BERTScore ('p', 'r', 'f')
         alpha, beta, gamma, delta: коэффициенты Q
 
     Returns:
@@ -603,8 +607,10 @@ def evaluate_manual_input(
     ot_sr = metrics_dict.get('ot_sr', {})
 
     # 1. Извлечь raw значения метрик
-    raw_lex = _extract_metric_value(ot_sr, lex_mode, sem_mode, rouge_measure, 'lex')
-    raw_sem = _extract_metric_value(ot_sr, lex_mode, sem_mode, rouge_measure, 'sem')
+    raw_lex = _extract_metric_value(ot_sr, lex_mode, sem_mode, rouge_measure, 'lex',
+                                    bertscore_measure=bertscore_measure)
+    raw_sem = _extract_metric_value(ot_sr, lex_mode, sem_mode, rouge_measure, 'sem',
+                                    bertscore_measure=bertscore_measure)
     raw_comp = metrics_dict.get('compression_ratio', 0.0)
 
     # Проверка доступности метрик
@@ -629,8 +635,10 @@ def evaluate_manual_input(
     has_reference = metrics_dict.get('ar_sr') is not None
     if has_reference:
         ar_sr = metrics_dict['ar_sr']
-        lex_as = _extract_metric_value(ar_sr, lex_mode, sem_mode, rouge_measure, 'lex') or 0.0
-        sem_as = _extract_metric_value(ar_sr, lex_mode, sem_mode, rouge_measure, 'sem') or 0.0
+        lex_as = _extract_metric_value(ar_sr, lex_mode, sem_mode, rouge_measure, 'lex',
+                                       bertscore_measure=bertscore_measure) or 0.0
+        sem_as = _extract_metric_value(ar_sr, lex_mode, sem_mode, rouge_measure, 'sem',
+                                       bertscore_measure=bertscore_measure) or 0.0
     else:
         # Без авторского реферата — упрощённая формула (множители = 1.0)
         lex_as = 1.0
@@ -664,6 +672,31 @@ def evaluate_manual_input(
 # ═══════════════════════════════════════════════════════════════════════
 # Полный пайплайн
 # ═══════════════════════════════════════════════════════════════════════
+
+def run_pipeline_from_df(df_raw: pd.DataFrame,
+                         threshold_mode: str = 'reference',
+                         percentile_low: float = 10, percentile_high: float = 90,
+                         tau: float = 2.0,
+                         alpha: float = 0.45, beta: float = 0.25,
+                         gamma: float = 0.15, delta: float = 0.15) -> Tuple[pd.DataFrame, Dict, Dict]:
+    """
+    Полный пайплайн из готового DataFrame (например, из tsm_db).
+
+    Returns: (df_result, calibration, thresholds)
+    """
+    cal = calibrate(df_raw)
+
+    df_ot_sr = df_raw[df_raw['comparison'] == 'OT-SR'].copy()
+    df_z = compute_z_scores(df_ot_sr, cal)
+
+    thr = compute_thresholds(threshold_mode, df_raw, cal,
+                             percentile_low, percentile_high, tau)
+
+    df_diag = classify_all(df_z, thr)
+    df_result = compute_quality(df_diag, df_raw, alpha, beta, gamma, delta)
+
+    return df_result, cal, thr
+
 
 def run_pipeline(data: Dict, lex_mode: str = 'rouge1', sem_mode: str = 'bleurt',
                  rouge_measure: str = 'p', selected_models: Optional[List[str]] = None,

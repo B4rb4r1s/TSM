@@ -2,12 +2,9 @@
 app.py — Dash-приложение для интерактивной трёхфакторной оценки рефератов.
 
 Две вкладки:
-1. Анализ моделей — визуализация предвычисленных метрик из JSON
+1. Анализ моделей — визуализация метрик из БД
 2. Ручной анализ — ввод текста + реферата, вычисление метрик в реальном времени
 """
-
-import json
-import math
 
 import dash
 from dash import dcc, html, Input, Output, State, callback, ctx, ALL, no_update
@@ -16,39 +13,29 @@ import pandas as pd
 
 import tsm_engine as eng
 import metrics_compute as mc
+import tsm_config as config
+from db import Database
+import tsm_db
 
 # ═══════════════════════════════════════════════════════════════════════
 # Конфигурация
 # ═══════════════════════════════════════════════════════════════════════
 
-DEFAULT_METRICS_DIR = 'FULL/data-metrics-480'
-DEFAULT_DB_PATH = 'data-tables/data-full+LLM.db'
-GRID_COLS = 4  # колонок в сетке 2D графиков
+DEFAULT_SOURCE = '480'          # publications.source в БД
+GRID_COLS = 4                   # колонок в сетке 2D графиков
 
-MODEL_SHORT = {
-    'summary_lingvo': 'Лингво',
-    'summary_TextRank': 'TextRank',
-    'summary_LexRank': 'LexRank',
-    'summary_mt5': 'mT5',
-    'summary_mbart': 'mBART',
-    'summary_rut5': 'ruT5',
-    'summary_t5': 'T5',
-    # 'summary_Summarunner': 'SummaRuNNer',
-    'summary_forzer_GigaChat3-10B-A1.8B_latest': 'GigaChat 3',
-    'summary_qwen2.5_7b': 'Qwen 2.5',
-    'summary_qwen3_8b': 'Qwen 3',
-    'summary_yandex_YandexGPT-5-Lite-8B-instruct-GGUF_latest': 'YandexGPT 5',
-}
+MODEL_SHORT = config.MODEL_SHORT
 
 # ═══════════════════════════════════════════════════════════════════════
 # Инициализация
 # ═══════════════════════════════════════════════════════════════════════
 
-# Загрузить данные при старте
-metrics_data = eng.load_metrics(DEFAULT_METRICS_DIR)
-available_models = eng.get_available_models(metrics_data)
-available_lex = eng.get_available_lexical_metrics(metrics_data)
-available_sem = eng.get_available_semantic_metrics(metrics_data)
+# Подключение к БД
+db = Database()
+
+# Доступные модели и метрики из БД
+available_models = tsm_db.get_model_names_from_db_fast(db, source=DEFAULT_SOURCE)
+available_lex, available_sem = tsm_db.get_available_metric_modes(db, source=DEFAULT_SOURCE)
 
 # ═══════════════════════════════════════════════════════════════════════
 # Приложение Dash
@@ -74,7 +61,7 @@ tab_models = dcc.Tab(label='Анализ моделей', value='tab-models', ch
                     dcc.Dropdown(
                         id='dd-lex-metric',
                         options=[{'label': eng.LEXICAL_LABELS.get(m, m), 'value': m} for m in available_lex],
-                        value='rouge1',
+                        value=available_lex[0] if available_lex else 'rouge1',
                         clearable=False,
                         style={'fontSize': '13px'},
                     ),
@@ -86,7 +73,7 @@ tab_models = dcc.Tab(label='Анализ моделей', value='tab-models', ch
                         id='dd-sem-metric',
                         options=[{'label': eng.SEMANTIC_LABELS.get(m, m.replace('emb:', '')), 'value': m}
                                  for m in available_sem],
-                        value='bleurt',
+                        value=available_sem[0] if available_sem else 'bertscore',
                         clearable=False,
                         style={'fontSize': '13px'},
                     ),
@@ -102,6 +89,21 @@ tab_models = dcc.Tab(label='Анализ моделей', value='tab-models', ch
                             {'label': 'F-мера', 'value': 'f'},
                         ],
                         value='p',
+                        inline=True,
+                        style={'fontSize': '13px'},
+                    ),
+                ], style={'flex': '1', 'minWidth': '200px'}),
+
+                html.Div([
+                    html.Label('BERTScore мера', style={'fontWeight': 'bold', 'fontSize': '13px'}),
+                    dcc.RadioItems(
+                        id='radio-bertscore-measure',
+                        options=[
+                            {'label': 'Precision', 'value': 'p'},
+                            {'label': 'Recall', 'value': 'r'},
+                            {'label': 'F-мера', 'value': 'f'},
+                        ],
+                        value='f',
                         inline=True,
                         style={'fontSize': '13px'},
                     ),
@@ -338,6 +340,7 @@ app.layout = html.Div([
     State('dd-lex-metric', 'value'),
     State('dd-sem-metric', 'value'),
     State('radio-rouge-measure', 'value'),
+    State('radio-bertscore-measure', 'value'),
     State('radio-threshold-mode', 'value'),
     State('input-p-low', 'value'),
     State('input-p-high', 'value'),
@@ -348,17 +351,25 @@ app.layout = html.Div([
     State('input-delta', 'value'),
     State('checklist-models', 'value'),
 )
-def update_pipeline(n_clicks, lex_mode, sem_mode, rouge_measure,
+def update_pipeline(n_clicks, lex_mode, sem_mode, rouge_measure, bertscore_measure,
                     threshold_mode, p_low, p_high, tau,
                     alpha, beta, gamma, delta, selected_models):
     if not selected_models:
         return None, None, None, html.Span('Выберите хотя бы одну модель', style={'color': 'red'})
 
     try:
-        df, cal, thr = eng.run_pipeline(
-            metrics_data,
-            lex_mode=lex_mode, sem_mode=sem_mode, rouge_measure=rouge_measure,
-            selected_models=selected_models,
+        df_raw = tsm_db.prepare_dataframe_from_db(
+            db,
+            source=DEFAULT_SOURCE,
+            lex_mode=lex_mode,
+            sem_mode=sem_mode,
+            rouge_measure=rouge_measure,
+            bertscore_measure=bertscore_measure or 'f',
+            models=selected_models,
+            verbose=False,
+        )
+        df, cal, thr = eng.run_pipeline_from_df(
+            df_raw,
             threshold_mode=threshold_mode,
             percentile_low=p_low or 10, percentile_high=p_high or 90,
             tau=tau or 2.0,
@@ -522,12 +533,13 @@ def update_info_panel(selected_doc, results_json):
     if len(sub) == 0:
         return html.Div(f'Документ {selected_doc} не найден')
 
-    # Загрузить тексты
+    # Загрузить тексты из БД
+    pub_id = int(sub.iloc[0]['publication_id'])
     first_model = sub.iloc[0]['model']
-    texts = eng.load_texts(DEFAULT_DB_PATH, selected_doc, first_model)
+    texts = tsm_db.load_texts_from_db(db, pub_id, first_model)
 
     children = [
-        html.H4(f'Документ #{selected_doc}', style={'margin': '0 0 10px 0', 'color': '#2c3e50'}),
+        html.H4(f'Документ #{selected_doc} (pub_id={pub_id})', style={'margin': '0 0 10px 0', 'color': '#2c3e50'}),
     ]
 
     # Таблица моделей
@@ -576,7 +588,7 @@ def update_info_panel(selected_doc, results_json):
 
         for label, row in [('Лучший', best), ('Худший', worst)]:
             model_col = row['model']
-            model_texts = eng.load_texts(DEFAULT_DB_PATH, selected_doc, model_col)
+            model_texts = tsm_db.load_texts_from_db(db, pub_id, model_col)
             model_text = model_texts.get('model_summary', '')
             if not model_text:
                 continue
@@ -720,6 +732,7 @@ def update_3d_graph(toggle_value, results_json, thresholds, selected_doc):
     State('dd-lex-metric', 'value'),
     State('dd-sem-metric', 'value'),
     State('radio-rouge-measure', 'value'),
+    State('radio-bertscore-measure', 'value'),
     State('input-alpha', 'value'),
     State('input-beta', 'value'),
     State('input-gamma', 'value'),
@@ -728,7 +741,7 @@ def update_3d_graph(toggle_value, results_json, thresholds, selected_doc):
 )
 def compute_manual_metrics(n_clicks, source_text, summary_text, reference_text,
                            calibration, thresholds, results_json,
-                           lex_mode, sem_mode, rouge_measure,
+                           lex_mode, sem_mode, rouge_measure, bertscore_measure,
                            alpha, beta, gamma, delta):
     if not source_text or not source_text.strip():
         return html.Div('Введите исходный текст.', style={'color': '#e74c3c', 'fontWeight': 'bold'})
@@ -744,7 +757,7 @@ def compute_manual_metrics(n_clicks, source_text, summary_text, reference_text,
     if sem_mode and sem_mode.startswith('emb:'):
         return html.Div(
             'Embedding-метрики не поддерживаются для ручного ввода. '
-            'Выберите BERTScore или BLEURT на вкладке «Анализ моделей».',
+            'Выберите BERTScore на вкладке «Анализ моделей».',
             style={'color': '#e74c3c'},
         )
 
@@ -770,8 +783,9 @@ def compute_manual_metrics(n_clicks, source_text, summary_text, reference_text,
             calibration=calibration,
             thresholds=thresholds,
             lex_mode=lex_mode or 'rouge1',
-            sem_mode=sem_mode or 'bleurt',
+            sem_mode=sem_mode or 'bertscore',
             rouge_measure=rouge_measure or 'p',
+            bertscore_measure=bertscore_measure or 'f',
             alpha=alpha or 0.45,
             beta=beta or 0.25,
             gamma=gamma or 0.15,
