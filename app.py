@@ -571,15 +571,17 @@ def update_2d_graphs(results_json, thresholds, selected_doc):
         fig = _make_2d_scatter(df, model, thresholds, selected_doc)
         stats_panel = _make_model_stats_panel(df, model)
         card = html.Div([
-            dcc.Graph(
-                id={'type': 'graph-2d', 'index': model},
-                figure=fig,
-                config={'displayModeBar': False},
-                style={'height': '320px'},
+            html.Div(
+                dcc.Graph(
+                    id={'type': 'graph-2d', 'index': model},
+                    figure=fig,
+                    config={'displayModeBar': False},
+                    style={'height': '100%'},
+                ),
+                style={'height': '320px', 'position': 'relative', 'overflow': 'hidden'},
             ),
             stats_panel,
-        ], style={'border': '1px solid #ddd', 'borderRadius': '4px',
-                  'overflow': 'hidden'})
+        ], style={'border': '1px solid #ddd', 'borderRadius': '4px'})
         graphs.append(card)
 
     return graphs
@@ -684,7 +686,7 @@ def _make_2d_scatter(df, model, thresholds, selected_doc):
         margin=dict(l=40, r=10, t=35, b=35),
         plot_bgcolor='white',
         paper_bgcolor='white',
-        height=350,
+        height=320,
     )
     fig.update_xaxes(gridcolor='#eee', gridwidth=0.5)
     fig.update_yaxes(gridcolor='#eee', gridwidth=0.5)
