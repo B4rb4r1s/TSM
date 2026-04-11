@@ -30,7 +30,8 @@ print("✓ Все библиотеки успешно загружены")
 import tsm_config as config
 from tsm_db import prepare_dataframe_from_db
 
-import src.visual.tsm_visualization as visualization
+# import src.visual.tsm_visualization as visualization
+from src.visual import scatter_plots, box_plots, histograms
 from src.calibrate_reference_distribution import calibrate_reference_distribution
 from src.compute_z_score import compute_z_scores
 from src.calibrate_thresholds import diagnose_all_summaries
@@ -138,11 +139,11 @@ if __name__ == "__main__":
     print("ЭТАП 5: ВИЗУАЛИЗАЦИЯ")
     print("="*70)
 
-    visualization.scatter_plot(adaptive_thresholds, df_final)
-    visualization.scatter_plot_3d(adaptive_thresholds, df_final)
-    visualization.scatter_plot_each_models(adaptive_thresholds, df_final)
-    visualization.scatter_plot_all_models(adaptive_thresholds, df_final, df_final_ref)
-    visualization.box_plots(df_final)
+    scatter_plots.scatter_plot(adaptive_thresholds, df_final)
+    scatter_plots.scatter_plot_3d(adaptive_thresholds, df_final)
+    scatter_plots.scatter_plot_each_models(adaptive_thresholds, df_final)
+    scatter_plots.scatter_plot_all_models(adaptive_thresholds, df_final, df_final_ref)
+    box_plots.box_plots(df_final)
 
     
     # Диапазон h и шаг
@@ -178,10 +179,10 @@ if __name__ == "__main__":
     k_func = 2.0
     x_func = np.linspace(-4, 8, 2000)
 
-    visualization.boxplot_animation(h_values, h_to_data, model_labels, model_palette, x_func, k_func)
-    visualization.histogramm(df_raw, calibration)
-    visualization.boxplot_compression(df_raw, df_final, calibration)
-    visualization.scatter_lex_sem_comp(adaptive_thresholds, df_final)
+    box_plots.boxplot_animation(h_values, h_to_data, model_labels, model_palette, x_func, k_func)
+    histograms.histogramm(df_raw, calibration)
+    box_plots.boxplot_compression(df_raw, df_final, calibration)
+    scatter_plots.scatter_lex_sem_comp(adaptive_thresholds, df_final)
 
 
     # =============================================================================
