@@ -54,8 +54,10 @@ class Database:
                     REMOTE_DSN, row_factory=dict_row,
                     connect_timeout=3,
                 )
+                print("CONNECTED: remote DB")
             except Exception:
                 self._conn = psycopg.connect(self.dsn, row_factory=dict_row)
+                print("CONNECTED: local DB")
         return self._conn
 
     @contextmanager

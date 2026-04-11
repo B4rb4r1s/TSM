@@ -484,15 +484,59 @@ def update_2d_graphs(results_json, thresholds, selected_doc):
     graphs = []
     for model in models:
         fig = _make_2d_scatter(df, model, thresholds, selected_doc)
-        graph = dcc.Graph(
-            id={'type': 'graph-2d', 'index': model},
-            figure=fig,
-            config={'displayModeBar': False},
-            style={'height': '350px', 'border': '1px solid #ddd'},
-        )
-        graphs.append(graph)
+        stats_panel = _make_model_stats_panel(df, model)
+        card = html.Div([
+            dcc.Graph(
+                id={'type': 'graph-2d', 'index': model},
+                figure=fig,
+                config={'displayModeBar': False},
+                style={'height': '320px'},
+            ),
+            stats_panel,
+        ], style={'border': '1px solid #ddd', 'borderRadius': '4px',
+                  'overflow': 'hidden'})
+        graphs.append(card)
 
     return graphs
+
+
+def _make_model_stats_panel(df, model):
+    """Плашка со средними показателями модели под графиком."""
+    sub = df[df['model'] == model]
+    n = len(sub)
+    if n == 0:
+        return html.Div()
+
+    model_label = MODEL_SHORT.get(model, model)
+    q_mean = sub['Q'].mean()
+    z_lex_mean = sub['z_lex'].mean()
+    z_sem_mean = sub['z_sem'].mean()
+    z_comp_mean = sub['z_comp'].mean()
+
+    # Доля "good" диагнозов
+    n_good = (sub['diagnosis_type'] == 'good').sum()
+    pct_good = n_good / n * 100
+
+    # Цвет Q по качеству
+    q_color = '#2ecc71' if q_mean >= 0.4 else '#f39c12' if q_mean >= 0.2 else '#e74c3c'
+
+    s = {'fontSize': '11px', 'color': '#555'}
+    sb = {**s, 'fontWeight': 'bold'}
+
+    return html.Div([
+        html.Div([
+            html.Span('Q̄=', style=s),
+            html.Span(f'{q_mean:.3f}', style={**sb, 'color': q_color, 'fontSize': '13px'}),
+            html.Span(f'  ✓{pct_good:.0f}%', style={**sb, 'color': '#2ecc71', 'fontSize': '13px'}),
+            html.Span(f'  n={n}', style=s),
+        ]),
+        html.Div([
+            html.Span(f'z̄_lex={z_lex_mean:+.2f}', style=s),
+            html.Span(f'  z̄_sem={z_sem_mean:+.2f}', style=s),
+            html.Span(f'  z̄_comp={z_comp_mean:+.2f}', style=s),
+        ]),
+    ], style={'padding': '4px 8px', 'background': '#f8f9fa',
+              'borderTop': '1px solid #eee', 'lineHeight': '1.4'})
 
 
 def _make_2d_scatter(df, model, thresholds, selected_doc):
