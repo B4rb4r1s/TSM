@@ -189,6 +189,7 @@ tab_models = dcc.Tab(label='Анализ моделей', value='tab-models', ch
                         options=[
                             {'label': 'Процентили', 'value': 'reference'},
                             {'label': '± σ', 'value': 'centered'},
+                            {'label': 'Вручную', 'value': 'manual'},
                         ],
                         value='reference',
                         inline=True,
@@ -215,6 +216,41 @@ tab_models = dcc.Tab(label='Анализ моделей', value='tab-models', ch
                 ], style={'flex': '0'}),
             ], style={'display': 'flex', 'gap': '20px', 'alignItems': 'end',
                       'flexWrap': 'wrap', 'marginBottom': '12px'}),
+
+            # Строка 2.1: Ручные пороги (видны только при mode='manual')
+            html.Div(id='div-manual-thresholds', children=[
+                html.Div([
+                    html.Label('Лексический (z_lex):', style={'fontSize': '12px', 'fontWeight': 'bold',
+                               'minWidth': '130px'}),
+                    html.Span('нижн.', style={'fontSize': '11px'}),
+                    dcc.Input(id='input-thr-lex-lo', type='number', value=-2.0,
+                              step=0.1, style={'width': '65px', 'fontSize': '13px'}),
+                    html.Span(' верхн.', style={'fontSize': '11px'}),
+                    dcc.Input(id='input-thr-lex-hi', type='number', value=2.0,
+                              step=0.1, style={'width': '65px', 'fontSize': '13px'}),
+
+                    html.Span('  Семантический (z_sem):', style={'fontSize': '12px', 'fontWeight': 'bold',
+                               'marginLeft': '20px'}),
+                    html.Span(' нижн.', style={'fontSize': '11px'}),
+                    dcc.Input(id='input-thr-sem-lo', type='number', value=-2.0,
+                              step=0.1, style={'width': '65px', 'fontSize': '13px'}),
+                    html.Span(' верхн.', style={'fontSize': '11px'}),
+                    dcc.Input(id='input-thr-sem-hi', type='number', value=2.0,
+                              step=0.1, style={'width': '65px', 'fontSize': '13px'}),
+
+                    html.Span('  Сжатие (z_comp):', style={'fontSize': '12px', 'fontWeight': 'bold',
+                               'marginLeft': '20px'}),
+                    html.Span(' нижн.', style={'fontSize': '11px'}),
+                    dcc.Input(id='input-thr-comp-lo', type='number', value=-2.0,
+                              step=0.1, style={'width': '65px', 'fontSize': '13px'}),
+                    html.Span(' верхн.', style={'fontSize': '11px'}),
+                    dcc.Input(id='input-thr-comp-hi', type='number', value=2.0,
+                              step=0.1, style={'width': '65px', 'fontSize': '13px'}),
+                ], style={'display': 'flex', 'alignItems': 'center', 'gap': '4px',
+                          'flexWrap': 'wrap'}),
+            ], style={'display': 'none', 'marginBottom': '12px', 'padding': '8px',
+                      'background': '#fef9e7', 'borderRadius': '4px',
+                      'border': '1px solid #f0e68c'}),
 
             # Строка 3: Коэффициенты Q
             html.Div([
@@ -392,6 +428,23 @@ app.layout = html.Div([
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# Callback: Показ/скрытие панели ручных порогов
+# ═══════════════════════════════════════════════════════════════════════
+
+@callback(
+    Output('div-manual-thresholds', 'style'),
+    Input('radio-threshold-mode', 'value'),
+)
+def toggle_manual_thresholds(mode):
+    base = {'marginBottom': '12px', 'padding': '8px',
+            'background': '#fef9e7', 'borderRadius': '4px',
+            'border': '1px solid #f0e68c'}
+    if mode == 'manual':
+        return {**base, 'display': 'block'}
+    return {**base, 'display': 'none'}
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # Callback 1: Пересчёт пайплайна (Вкладка 1)
 # ═══════════════════════════════════════════════════════════════════════
 
@@ -413,15 +466,26 @@ app.layout = html.Div([
     State('input-beta', 'value'),
     State('input-gamma', 'value'),
     State('input-delta', 'value'),
+    State('input-thr-lex-lo', 'value'),
+    State('input-thr-lex-hi', 'value'),
+    State('input-thr-sem-lo', 'value'),
+    State('input-thr-sem-hi', 'value'),
+    State('input-thr-comp-lo', 'value'),
+    State('input-thr-comp-hi', 'value'),
     State({'type': 'model-check', 'group': ALL}, 'value'),
 )
 def update_pipeline(n_clicks, lex_mode, sem_mode, rouge_measure, bertscore_measure,
                     threshold_mode, p_low, p_high, tau,
-                    alpha, beta, gamma, delta, selected_models_groups):
+                    alpha, beta, gamma, delta,
+                    thr_lex_lo, thr_lex_hi, thr_sem_lo, thr_sem_hi,
+                    thr_comp_lo, thr_comp_hi, selected_models_groups):
     # Собрать выбранные модели из всех групп
     selected_models = [m for group in (selected_models_groups or []) for m in (group or [])]
     if not selected_models:
         return None, None, None, html.Span('Выберите хотя бы одну модель', style={'color': 'red'})
+
+    # Для ручного режима используем 'centered' как базу (пороги перезапишем)
+    effective_mode = threshold_mode if threshold_mode != 'manual' else 'centered'
 
     try:
         df_raw = tsm_db.prepare_dataframe_from_db(
@@ -437,12 +501,33 @@ def update_pipeline(n_clicks, lex_mode, sem_mode, rouge_measure, bertscore_measu
         )
         df, cal, thr = eng.run_pipeline_from_df(
             df_raw,
-            threshold_mode=threshold_mode,
+            threshold_mode=effective_mode,
             percentile_low=p_low or 10, percentile_high=p_high or 90,
             tau=tau or 2.0,
             alpha=alpha or 0.45, beta=beta or 0.25,
             gamma=gamma or 0.15, delta=delta or 0.15,
         )
+
+        # Ручной режим: подставить пользовательские пороги и пересчитать
+        if threshold_mode == 'manual':
+            thr = {
+                'tau_lex_lower': thr_lex_lo if thr_lex_lo is not None else -2.0,
+                'tau_lex_upper': thr_lex_hi if thr_lex_hi is not None else 2.0,
+                'tau_sem_lower': thr_sem_lo if thr_sem_lo is not None else -2.0,
+                'tau_sem_upper': thr_sem_hi if thr_sem_hi is not None else 2.0,
+                'tau_comp_lower': thr_comp_lo if thr_comp_lo is not None else -2.0,
+                'tau_comp_upper': thr_comp_hi if thr_comp_hi is not None else 2.0,
+                'mode': 'manual',
+            }
+            # Пересчитать диагностику и Q с ручными порогами
+            df_z = eng.compute_z_scores(
+                df_raw[df_raw['comparison'] == 'OT-SR'].copy(), cal)
+            df_diag = eng.classify_all(df_z, thr)
+            df = eng.compute_quality(
+                df_diag, df_raw,
+                alpha=alpha or 0.45, beta=beta or 0.25,
+                gamma=gamma or 0.15, delta=delta or 0.15)
+
     except Exception as e:
         return None, None, None, html.Span(f'Ошибка: {e}', style={'color': 'red'})
 
