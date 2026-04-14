@@ -5,14 +5,14 @@
 import numpy as np
 import pandas as pd
 
-
-
-def g_funk(x, h=2, k=2):
-    return x/(1+(h-1)*S_funk(x, k))
-
-
-def S_funk(x, k=2):
-    return 1/(1+np.exp(-k*x))
+# Единое ядро штрафов (совместно с KGS).
+# Относительный импорт работает и при запуске TSM/tsm.py как скрипта
+# (src/ на sys.path), и при импорте через `from TSM.src.composite_metric import ...`
+# (namespace-пакет TSM.src).
+try:
+    from .q_kernel import g_funk, sigmoid as S_funk
+except ImportError:  # pragma: no cover — fallback для прямого запуска файла
+    from q_kernel import g_funk, sigmoid as S_funk
 
 
 def compute_quality_score(df_diagnosed: pd.DataFrame,

@@ -76,7 +76,7 @@ MODEL_SHORT = {
 VERSION_SHORT = {
     'no_keywords':              '(без КС)',
     'extracted:KWE':            '(KWE)',
-    'extracted:rutermextract':  '(ruterm)',
+    'extracted:rutermextract':  '(ruTermExtract)',
     'extracted:textrank':       '(TextRank)',
     'extracted:tfidf':          '(TF-IDF)',
     'abstractive':              '',
